@@ -256,4 +256,149 @@ if app_mode == "📤 Upload & Process":
                                 data = json.loads(text)
                                 
                                 shop_name = data.get("shop_name", "Unknown Shop")
-                                bill_date = data.get("bill_date",
+                                bill_date = data.get("bill_date", datetime.now().strftime("%Y-%m-%d"))
+                                gst_number = data.get("gst_number", "N/A")
+                                
+                                st.markdown(f"### 🏪 Vendor: `{shop_name}`")
+                                c1, c2 = st.columns(2)
+                                c1.markdown(f"**🗓️ Declared Invoice Date:** {bill_date}")
+                                
+                                is_valid_gst, formatted_gst = validate_gst(gst_number)
+                                if gst_number != "N/A" and is_valid_gst:
+                                    c2.markdown(f"**🛡️ GSTIN Registry Validation:** :green[✅ Valid - {formatted_gst}]")
+                                elif gst_number != "N/A":
+                                    c2.markdown(f"**🛡️ GSTIN Registry Validation:** :orange[⚠️ Format Mismatch - {gst_number}]")
+                                else:
+                                    c2.markdown(f"**🛡️ GSTIN Registry Validation:** :red[ℹ️ Not Disclosed]")
+                                    
+                                items = data.get("items", [])
+                                if items:
+                                    df = pd.DataFrame(items)
+                                    st.markdown("<h4 style='font-size:18px; margin-top:20px;'>Detailed Line-Item Breakdown</h4>", unsafe_allow_html=True)
+                                    st.dataframe(df, use_container_width=True, hide_index=True)
+                                    
+                                    if "amount" in df.columns:
+                                        df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
+                                    calculated_total = float(df["amount"].sum())
+                                else:
+                                    calculated_total = 0.0
+                                    
+                                try:
+                                    bill_total = float(str(data.get("total", 0)).replace(',', ''))
+                                except:
+                                    bill_total = 0.0
+                                    
+                                diff = abs(calculated_total - bill_total)
+                                status_txt = "Matched" if diff < 1 else "Mismatch"
+                                
+                                st.markdown("<h4 style='font-size:18px; margin-top:20px;'>Arithmetic Audit Engine</h4>", unsafe_allow_html=True)
+                                x1, x2 = st.columns(2)
+                                x1.metric("Summation of Extracted Items", f"₹{calculated_total:,.2f}")
+                                x2.metric("Declared Invoice Total", f"₹{bill_total:,.2f}")
+                                
+                                if status_txt == "Matched":
+                                    st.success("🎯 Auto-Arithmetic Audit Pass: Balance sheet matches perfectly.")
+                                else:
+                                    st.error(f"🛑 Audit Discrepancy Found: Leakage variance of ₹{diff:,.2f}")
+                                    
+                                saved, db_msg = insert_bill(shop_name, bill_date, gst_number, bill_total, calculated_total, status_txt)
+                                if saved:
+                                    st.toast(f"Saved: {db_msg}", icon="💾")
+                                else:
+                                    st.toast(f"Skipped: {db_msg}", icon="🚨")
+                                    
+                                st.markdown("---")
+                                excel_buffer = BytesIO()
+                                with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+                                    pd.DataFrame(items).to_excel(writer, index=False, sheet_name="Parsed Invoice Data")
+                                    
+                                pdf_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+                                doc = SimpleDocTemplate(pdf_temp.name)
+                                styles = getSampleStyleSheet()
+                                elements = [
+                                    Paragraph(f"Invoice Summary: {shop_name}", styles["Title"]),
+                                    Spacer(1, 10),
+                                    Paragraph(f"Date: {bill_date} | GSTIN: {gst_number}", styles["Normal"]),
+                                    Paragraph(f"Verified Final Amount: INR {bill_total}", styles["Heading3"])
+                                ]
+                                doc.build(elements)
+                                
+                                ut1, ut2, ut3 = st.columns(3)
+                                with ut1:
+                                    st.download_button("📥 Export Excel Data Sheets", data=excel_buffer.getvalue(), file_name=f"{shop_name}_ledger.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
+                                with ut2:
+                                    with open(pdf_temp.name, "rb") as f:
+                                        st.download_button("📄 Download Sign-off PDF", f.read(), file_name=f"{shop_name}_receipt.pdf", mime="application/pdf", use_container_width=True)
+                                with ut3:
+                                    message = f"🧾 *AI Bill Alert*\\nShop: {shop_name}\\nDate: {bill_date}\\nTotal: ₹{bill_total}\\nStatus: {status_txt}"
+                                    wa_url = "https://wa.me/?text=" + urllib.parse.quote(message)
+                                    st.link_button("📱 Forward Summary to WhatsApp", wa_url, use_container_width=True)
+                                    
+                            except Exception as parse_err:
+                                st.error(f"Structural Parsing Fault: {str(parse_err)}")
+
+# -------------------------
+# MODULE 2: DASHBOARD & HISTORY
+# -------------------------
+elif app_mode == "📊 Dashboard & History":
+    st.markdown("<h1 style='font-size:36px; margin-bottom:0px;'>📊 Financial Operations Command Center</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='color: #64748b; font-size: 16px;'>Real-time telemetry, duplicate transaction logs, and ledger integrity checks.</p>", unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+    
+    conn = sqlite3.connect("bills.db")
+    df_db = pd.read_sql_query("SELECT * FROM bills ORDER BY id DESC", conn)
+    conn.close()
+    
+    if df_db.empty:
+        st.info("System Engine reporting zero active logs. Process incoming invoices to unlock dashboard diagnostics.")
+    else:
+        total_spent = df_db["total"].sum()
+        total_invoices = len(df_db)
+        mismatched_count = len(df_db[df_db["status"] == "Mismatch"])
+        
+        db1, db2, db3 = st.columns(3, gap="large")
+        db1.metric("💰 Aggregate Pipeline Spend", f"₹{total_spent:,.2f}")
+        db2.metric("📄 Corporate Vouchers Audited", f"{total_invoices} Bills")
+        
+        if mismatched_count > 0:
+            db3.metric("⚠️ Failed Integrity Mismatches", f"{mismatched_count} Issues")
+        else:
+            db3.metric("✅ System Integrity Audit", "100% Cleared")
+            
+        st.markdown("<br><hr><br>", unsafe_allow_html=True)
+        
+        graph_col1, graph_col2 = st.columns([2, 1], gap="large")
+        
+        with graph_col1:
+            st.markdown("<h3 style='font-size:19px; margin-bottom:15px;'>📈 Top Vendors Distribution</h3>", unsafe_allow_html=True)
+            chart_data = df_db.groupby("shop_name")["total"].sum().reset_index().sort_values(by="total", ascending=False).head(8)
+            chart_data = chart_data.set_index("shop_name")
+            st.bar_chart(chart_data, y="total", color="#4f46e5")
+            
+        with graph_col2:
+            st.markdown("<h3 style='font-size:19px; margin-bottom:15px;'>📊 Ledger Audit Split</h3>", unsafe_allow_html=True)
+            status_distribution = df_db["status"].value_counts().reset_index()
+            status_distribution.columns = ["Audit Status", "Volume Counter"]
+            st.dataframe(status_distribution, use_container_width=True, hide_index=True)
+            
+        st.markdown("<br><hr><br>", unsafe_allow_html=True)
+        
+        st.markdown("<h3 style='font-size:22px;'>🔍 Centralized Ledger Records Registry</h3>", unsafe_allow_html=True)
+        
+        query_col, export_col = st.columns([3, 1], gap="medium")
+        with query_col:
+            search_query = st.text_input("⚡ Smart Filter (Input target Vendor Name / Retail Shop keyword string)")
+        with export_col:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            master_excel_buffer = BytesIO()
+            with pd.ExcelWriter(master_excel_buffer, engine="openpyxl") as writer:
+                df_db.to_excel(writer, index=False, sheet_name="Master DB Sheet")
+            st.download_button("📥 Master Export DB Logs", data=master_excel_buffer.getvalue(), file_name="Corporate_Master_Ledger.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
+            
+        filtered_df = df_db
+        if search_query:
+            filtered_df = df_db[df_db["shop_name"].str.contains(search_query, case=False, na=False)]
+            
+        display_df = filtered_df.copy()
+        display_df.columns = ["Log ID", "Vendor Station", "Invoice Date", "Registered GSTIN", "Invoice Cost (₹)", "Computed Cost (₹)", "Audit Evaluation", "System Timestamp"]
+        st.dataframe(display_df, use_container_width=True, hide_index=True)
