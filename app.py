@@ -26,11 +26,9 @@ st.set_page_config(
 # Deep CSC Ultimate Colorful UI/UX Premium Stylesheet
 st.markdown("""
     <style>
-        /* Modern Fluid Theme Reset */
         .main { background-color: #f8fafc; }
         h1, h2, h3, h4 { font-family: 'Plus Jakarta Sans', system-ui, sans-serif !important; color: #0f172a !important; font-weight: 800 !important; }
         
-        /* Deep CSC Premium Dynamic Branding Header */
         .deep-csc-header {
             background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #311042 100%);
             padding: 30px;
@@ -73,7 +71,6 @@ st.markdown("""
             box-shadow: 0 4px 14px rgba(236, 72, 153, 0.4);
         }
         
-        /* Colorful Glowing Dashboard Metrics Cards */
         div[data-testid="stMetric"] {
             background: #ffffff !important;
             padding: 24px !important;
@@ -102,10 +99,8 @@ st.markdown("""
             margin-bottom: 8px;
         }
 
-        /* Sidebar Styling */
         .stSidebar { background-color: #0f172a !important; }
         
-        /* Action Buttons */
         .stButton>button {
             background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important;
             color: white !important;
@@ -146,4 +141,48 @@ def init_db():
 
 init_db()
 
-def insert_bill(shop, date, gst, total, calc_total, status
+def insert_bill(shop, date, gst, total, calc_total, status):
+    conn = sqlite3.connect("bills.db")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM bills WHERE shop_name=? AND bill_date=? AND total=?", (shop, date, total))
+    duplicate = cursor.fetchone()
+    
+    if duplicate:
+        conn.close()
+        return False, "Duplicate detected in Database!"
+        
+    cursor.execute('''
+        INSERT INTO bills (shop_name, bill_date, gst_number, total, calculated_total, status, timestamp)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    ''', (shop, date, gst, total, calc_total, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    conn.close()
+    return True, "Successfully saved to DB"
+
+# -------------------------
+# LOGIN SYSTEM
+# -------------------------
+USERNAME = st.secrets.get("APP_USERNAME", "admin")
+PASSWORD = st.secrets.get("APP_PASSWORD", "password123")
+
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+if not st.session_state.logged_in:
+    st.markdown("""
+        <div style='text-align: center; padding: 20px;'>
+            <h2 style='color: #4f46e5; font-size: 42px; font-weight:900; letter-spacing:-1px;'>Deep CSC</h2>
+            <p style='color: #64748b; font-size: 16px; margin-top: -10px;'>Authorized Digital Seva AI Portal</p>
+        </div>
+    """, unsafe_allow_html=True)
+    st.title("🔐 System Login Proxy")
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+
+    if st.button("Login Server", use_container_width=True):
+        if username == USERNAME and password == PASSWORD:
+            st.session_state.logged_in = True
+            st.rerun()
+        else:
+            st.error("Invalid Username or Password Credentials")
+    st.
