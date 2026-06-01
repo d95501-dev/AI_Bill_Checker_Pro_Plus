@@ -34,7 +34,7 @@ st.markdown("""
         .stButton>button { border-radius: 6px; font-weight: 500; transition: all 0.3s ease; }
         .stButton>button:hover { transform: translateY(-1px); box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
     </style>
-""", unsafe_style_html=True)
+""", unsafe_allow_html=True) # <-- Isko "unsafe_allow_html=True" kar dein
 
 # -------------------------
 # DATABASE SETUP
