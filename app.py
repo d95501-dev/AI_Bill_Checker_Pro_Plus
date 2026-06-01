@@ -135,57 +135,10 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
-    st.title("🔐 AI Bill Checker Login")
+    st.title("🔐 AI Bill Checker Login", text_alignment="center")
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
 
-    if st.button("Login"):
+    if st.button("Login", use_container_width=True):
         if username == USERNAME and password == PASSWORD:
-            st.session_state.logged_in = True
-            st.rerun()
-        else:
-            st.error("Invalid Username or Password")
-    st.stop()
-
-# -------------------------
-# SIDEBAR NAVIGATION
-# -------------------------
-st.sidebar.markdown("<h2 style='font-size: 20px; color: #f8fafc; margin-bottom: 5px;'>🏢 Control Center</h2>", unsafe_allow_html=True)
-st.sidebar.markdown(f"<p style='color: #94a3b8;'>Active Profile: <b>{USERNAME}</b></p>", unsafe_allow_html=True)
-app_mode = st.sidebar.selectbox("Navigate System", ["📤 Upload & Process", "📊 Dashboard & History"])
-
-st.sidebar.markdown("<br><br><hr>", unsafe_allow_html=True)
-if st.sidebar.button("🚪 Terminate Session", use_container_width=True):
-    st.session_state.logged_in = False
-    st.rerun()
-
-# -------------------------
-# GEMINI SETUP
-# -------------------------
-api_key = st.secrets.get("GEMINI_API_KEY", "")
-if not api_key:
-    st.error("Please configure GEMINI_API_KEY in your Streamlit secrets.")
-    st.stop()
-
-genai.configure(api_key=api_key)
-try:
-    model = genai.GenerativeModel("gemini-2.5-flash")
-except Exception as e:
-    st.error(f"Model Error: {e}")
-    st.stop()
-
-# -------------------------
-# HELPER VALIDATIONS
-# -------------------------
-def validate_gst(gst_str):
-    gst_regex = r'^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$'
-    clean_gst = re.sub(r'[^A-Z0-9]', '', gst_str.upper())
-    if re.match(gst_regex, clean_gst):
-        return True, clean_gst
-    return False, clean_gst
-
-# -------------------------
-# MODULE 1: UPLOAD & PROCESS
-# -------------------------
-if app_mode == "📤 Upload & Process":
-    st.title
+            st.
