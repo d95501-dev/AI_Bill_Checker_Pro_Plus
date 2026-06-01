@@ -17,58 +17,91 @@ import time
 # PAGE CONFIG & BRANDING
 # -------------------------
 st.set_page_config(
-    page_title="AI Bill Checker Premium",
+    page_title="AI Bill Checker Premium | Deep CSC",
     page_icon="🧾",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Premium Custom CSS Injection for Modern Dashboard Theme
+# Deep CSC Ultimate Colorful UI/UX Premium Stylesheet
 st.markdown("""
     <style>
-        /* Global Background and Typography styling */
+        /* Modern Fluid Theme Reset */
         .main { background-color: #f8fafc; }
-        h1, h2, h3 { font-family: 'Inter', system-ui, sans-serif; color: #0f172a !important; font-weight: 800 !important; }
+        h1, h2, h3, h4 { font-family: 'Plus Jakarta Sans', system-ui, sans-serif !important; color: #0f172a !important; font-weight: 800 !important; }
         
-        /* Glassmorphism Metric Cards styling */
+        /* Deep CSC Premium Dynamic Branding Header */
+        .deep-csc-header {
+            background: linear-gradient(135deg, #1e1b4b 0%, #311042 100%);
+            padding: 30px;
+            border-radius: 20px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+            margin-bottom: 35px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .branding-text h1 { color: #ffffff !important; margin: 0; font-size: 32px !important; letter-spacing: -0.5px; }
+        .branding-badge {
+            background: linear-gradient(135deg, #06b6d4 0%, #3b82f6 100%);
+            color: white !important;
+            padding: 6px 16px;
+            border-radius: 50px;
+            font-size: 13px !important;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            box-shadow: 0 4px 12px rgba(6, 182, 212, 0.3);
+        }
+        
+        /* Colorful Glowing Dashboard Metrics Cards */
         div[data-testid="stMetric"] {
-            background: linear-gradient(135deg, #ffffff 0%, #f1f5f9 100%);
-            padding: 24px;
-            border-radius: 16px;
-            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.04), 0 4px 6px -4px rgba(0, 0, 0, 0.04);
-            border: 1px solid #e2e8f0;
-            transition: transform 0.2s ease;
+            background: #ffffff !important;
+            padding: 24px !important;
+            border-radius: 18px !important;
+            box-shadow: 0 10px 15px -3px rgba(15, 23, 42, 0.04), 0 4px 6px -4px rgba(15, 23, 42, 0.04) !important;
+            border-top: 6px solid #4f46e5 !important; /* Default Color Bar */
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
         }
         div[data-testid="stMetric"]:hover {
-            transform: translateY(-4px);
-            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.06);
+            transform: translateY(-5px);
+            box-shadow: 0 20px 25px -5px rgba(15, 23, 42, 0.08) !important;
         }
+        /* Specific Border-colors for colorful division */
+        col-spent div[data-testid="stMetric"] { border-top-color: #4f46e5 !important; }
+        
         div[data-testid="stMetricValue"] {
-            font-size: 32px !important;
+            font-size: 34px !important;
             font-weight: 800 !important;
-            color: #4f46e5 !important;
+            letter-spacing: -1px;
         }
         div[data-testid="stMetricLabel"] {
-            font-size: 13px !important;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
+            font-size: 12px !important;
+            text-transform: uppercase !important;
+            letter-spacing: 1px !important;
             font-weight: 700 !important;
             color: #64748b !important;
+            margin-bottom: 8px;
         }
+
+        /* Modernized Sidebar Style Sheets */
+        .stSidebar { background-color: #0f172a !important; }
         
-        /* Modern Solid Buttons */
+        /* Fluid Interface Action Buttons */
         .stButton>button {
-            background: linear-gradient(135deg, #4f46e5 0%, #3b82f6 100%) !important;
+            background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important;
             color: white !important;
-            font-weight: 600 !important;
-            padding: 10px 20px !important;
-            border-radius: 10px !important;
+            font-weight: 700 !important;
+            padding: 12px 24px !important;
+            border-radius: 12px !important;
             border: none !important;
+            box-shadow: 0 4px 12px rgba(79, 70, 229, 0.2) !important;
             transition: all 0.2s ease;
         }
         .stButton>button:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3) !important;
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(79, 70, 229, 0.35) !important;
         }
     </style>
 """, unsafe_allow_html=True)
@@ -127,26 +160,37 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
-    st.title("🔐 AI Bill Checker Login")
+    st.markdown("""
+        <div style='text-align: center; padding: 20px;'>
+            <h2 style='color: #4f46e5; font-size: 40px; font-weight:900;'>Deep CSC</h2>
+            <p style='color: #64748b; font-size: 16px; margin-top: -10px;'>Secure AI Gateway Verification Panel</p>
+        </div>
+    """, unsafe_allow_html=True)
+    st.title("🔐 System Login Proxy")
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
 
-    if st.button("Login"):
+    if st.button("Login Server", use_container_width=True):
         if username == USERNAME and password == PASSWORD:
             st.session_state.logged_in = True
             st.rerun()
         else:
-            st.error("Invalid Username or Password")
+            st.error("Invalid Username or Password Credentials")
     st.stop()
 
 # -------------------------
 # SIDEBAR NAVIGATION
 # -------------------------
-st.sidebar.markdown("<h2 style='font-size: 18px; color: #f8fafc; margin-bottom: 5px;'>🏢 Control Center</h2>", unsafe_allow_html=True)
-st.sidebar.markdown(f"<p style='color: #94a3b8;'>Active Profile: <b>{USERNAME}</b></p>", unsafe_allow_html=True)
+st.sidebar.markdown("""
+    <div style='background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); padding: 15px; border-radius: 12px; text-align: center; margin-bottom: 20px; border: 1px solid #334155;'>
+        <h2 style='color: #38bdf8 !important; font-size: 22px; font-weight: 900; margin: 0;'>Deep CSC</h2>
+        <span style='color: #94a3b8; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;'>AI Tool Core Creator</span>
+    </div>
+""", unsafe_allow_html=True)
+st.sidebar.markdown(f"<p style='color: #94a3b8; font-size: 14px;'>Active Session: <b style='color:#f8fafc;'>{USERNAME}</b></p>", unsafe_allow_html=True)
 app_mode = st.sidebar.selectbox("Navigate System", ["📤 Upload & Process", "📊 Dashboard & History"])
 
-st.sidebar.markdown("<br><hr>", unsafe_allow_html=True)
+st.sidebar.markdown("<br><br><hr style='border-color: #1e293b;'>", unsafe_allow_html=True)
 if st.sidebar.button("🚪 Terminate Session", use_container_width=True):
     st.session_state.logged_in = False
     st.rerun()
@@ -180,8 +224,16 @@ def validate_gst(gst_str):
 # MODULE 1: UPLOAD & PROCESS
 # -------------------------
 if app_mode == "📤 Upload & Process":
-    st.title("🧾 AI Multi-Bill OCR Processor")
-    st.markdown("<p style='color: #64748b; font-size: 16px; margin-top:-15px;'>Automated structural data parsing pipeline powered by Gemini Vision Core.</p>", unsafe_allow_html=True)
+    # Colorful Top Banner
+    st.markdown("""
+        <div class="deep-csc-header">
+            <div class="branding-text">
+                <h1>🧾 AI Multi-Bill OCR Processor</h1>
+                <p style="color: #94a3b8; margin: 5px 0 0 0; font-size: 15px;">Automated structural data parsing pipeline powered by Gemini Vision Core.</p>
+            </div>
+            <div class="branding-badge">Engineered by Deep CSC</div>
+        </div>
+    """, unsafe_allow_html=True)
     
     uploaded_files = st.file_uploader(
         "Drop batch bill images below (Multi-upload supported)",
@@ -341,47 +393,68 @@ if app_mode == "📤 Upload & Process":
 # MODULE 2: DASHBOARD & HISTORY
 # -------------------------
 elif app_mode == "📊 Dashboard & History":
-    st.markdown("<h1 style='font-size:36px; margin-bottom:0px;'>📊 Financial Operations Command Center</h1>", unsafe_allow_html=True)
-    st.markdown("<p style='color: #64748b; font-size: 16px;'>Real-time telemetry, duplicate transaction logs, and ledger integrity checks.</p>", unsafe_allow_html=True)
-    st.markdown("<br>", unsafe_allow_html=True)
+    # Colorful Top Banner Custom Designed for Creator Deep CSC
+    st.markdown("""
+        <div class="deep-csc-header" style="background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);">
+            <div class="branding-text">
+                <h1 style="background: linear-gradient(to right, #38bdf8, #c084fc); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">📊 Financial Operations Command Center</h1>
+                <p style="color: #94a3b8; margin: 5px 0 0 0; font-size: 15px;">Real-time telemetry, advanced ledger tracking, and algorithmic auditing metrics logs.</p>
+            </div>
+            <div class="branding-badge" style="background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%); box-shadow: 0 4px 12px rgba(236, 72, 153, 0.3);">Created by Deep CSC</div>
+        </div>
+    """, unsafe_allow_html=True)
     
     conn = sqlite3.connect("bills.db")
     df_db = pd.read_sql_query("SELECT * FROM bills ORDER BY id DESC", conn)
     conn.close()
     
     if df_db.empty:
-        st.info("System Engine reporting zero active logs. Process incoming invoices to unlock dashboard diagnostics.")
+        st.markdown("""
+            <div style="background-color: #eff6ff; border-left: 5px solid #3b82f6; padding: 20px; border-radius: 8px; margin-top:20px;">
+                <h4 style="color: #1e40af !important; margin:0 0 8px 0;">ℹ️ System Logs Empty</h4>
+                <p style="color: #1e3a8a; margin:0; font-size:14px;">Dashboard active hone ke liye data ka hona zaroori hai. Kripya pehle <b>'📥 Upload & Process'</b> section mein jaakar koi bhi bill process kijiye, phir yahan real-time metrics, colorful graphics aur database automatically update ho jayenge!</p>
+            </div>
+        """, unsafe_allow_html=True)
     else:
         total_spent = df_db["total"].sum()
         total_invoices = len(df_db)
         mismatched_count = len(df_db[df_db["status"] == "Mismatch"])
         
+        # Colorful Indicated CSS Columns for Metrics
+        st.markdown("<div style='margin-bottom: -10px;'></div>", unsafe_allow_html=True)
         db1, db2, db3 = st.columns(3, gap="large")
-        db1.metric("💰 Aggregate Pipeline Spend", f"₹{total_spent:,.2f}")
-        db2.metric("📄 Corporate Vouchers Audited", f"{total_invoices} Bills")
         
-        if mismatched_count > 0:
-            db3.metric("⚠️ Failed Integrity Mismatches", f"{mismatched_count} Issues")
-        else:
-            db3.metric("✅ System Integrity Audit", "100% Cleared")
+        with db1:
+            st.markdown("<style>div[data-testid='stMetric'] { border-top: 6px solid #4f46e5 !important; }</style>", unsafe_allow_html=True)
+            st.metric("💰 Aggregate Pipeline Spend", f"₹{total_spent:,.2f}")
+        with db2:
+            st.markdown("<style>div[data-testid='stMetric'] { border-top: 6px solid #10b981 !important; }</style>", unsafe_allow_html=True)
+            st.metric("📄 Corporate Vouchers Audited", f"{total_invoices} Bills")
+        with db3:
+            if mismatched_count > 0:
+                st.markdown("<style>div[data-testid='stMetric'] { border-top: 6px solid #ef4444 !important; }</style>", unsafe_allow_html=True)
+                st.metric("⚠️ Failed Integrity Mismatches", f"{mismatched_count} Issues")
+            else:
+                st.markdown("<style>div[data-testid='stMetric'] { border-top: 6px solid #06b6d4 !important; }</style>", unsafe_allow_html=True)
+                st.metric("✅ System Integrity Audit", "100% Cleared")
             
-        st.markdown("<br><hr><br>", unsafe_allow_html=True)
+        st.markdown("<br><hr style='border-color: #e2e8f0;'><br>", unsafe_allow_html=True)
         
         graph_col1, graph_col2 = st.columns([2, 1], gap="large")
         
         with graph_col1:
-            st.markdown("<h3 style='font-size:19px; margin-bottom:15px;'>📈 Top Vendors Distribution</h3>", unsafe_allow_html=True)
+            st.markdown("<h3 style='font-size:19px; margin-bottom:15px; color:#4f46e5 !important;'>📈 Top Vendors Distribution</h3>", unsafe_allow_html=True)
             chart_data = df_db.groupby("shop_name")["total"].sum().reset_index().sort_values(by="total", ascending=False).head(8)
             chart_data = chart_data.set_index("shop_name")
             st.bar_chart(chart_data, y="total", color="#4f46e5")
             
         with graph_col2:
-            st.markdown("<h3 style='font-size:19px; margin-bottom:15px;'>📊 Ledger Audit Split</h3>", unsafe_allow_html=True)
+            st.markdown("<h3 style='font-size:19px; margin-bottom:15px; color:#10b981 !important;'>📊 Ledger Audit Split</h3>", unsafe_allow_html=True)
             status_distribution = df_db["status"].value_counts().reset_index()
             status_distribution.columns = ["Audit Status", "Volume Counter"]
             st.dataframe(status_distribution, use_container_width=True, hide_index=True)
             
-        st.markdown("<br><hr><br>", unsafe_allow_html=True)
+        st.markdown("<br><hr style='border-color: #e2e8f0;'><br>", unsafe_allow_html=True)
         
         st.markdown("<h3 style='font-size:22px;'>🔍 Centralized Ledger Records Registry</h3>", unsafe_allow_html=True)
         
