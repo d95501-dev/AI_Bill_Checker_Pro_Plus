@@ -181,7 +181,7 @@ if not st.session_state.logged_in:
 # -------------------------
 # SIDEBAR NAVIGATION
 # -------------------------
-st.sidebar.markdown("""
+st.sidebar.markdown("...")
     <div class="sidebar-brand-box">
         <div class="sidebar-title">Deep CSC</div>
         <div class="sidebar-subtitle">Deep Digital Seva Kendra</div>
