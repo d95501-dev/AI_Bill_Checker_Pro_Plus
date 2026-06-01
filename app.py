@@ -23,11 +23,13 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom Pure Inline CSS Stylesheet to prevent code breaks
+# Custom Global CSS Stylesheet - Fixed Sidebar Visibility & Contrast
 st.markdown("""
     <style>
         .main { background-color: #f8fafc; }
         h1, h2, h3, h4 { font-family: 'Plus Jakarta Sans', system-ui, sans-serif !important; color: #0f172a !important; font-weight: 800 !important; }
+        
+        /* Main Header Custom CSS */
         .deep-csc-header {
             background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #311042 100%);
             padding: 30px; border-radius: 24px; margin-bottom: 35px;
@@ -48,6 +50,8 @@ st.markdown("""
             padding: 8px 18px; border-radius: 50px; font-size: 13px !important; font-weight: 700;
             text-transform: uppercase; letter-spacing: 1px; box-shadow: 0 4px 14px rgba(236, 72, 153, 0.4);
         }
+        
+        /* Metrics Cards */
         div[data-testid="stMetric"] {
             background: #ffffff !important; padding: 24px !important; border-radius: 20px !important;
             box-shadow: 0 12px 20px -3px rgba(15, 23, 42, 0.04) !important;
@@ -55,7 +59,48 @@ st.markdown("""
         }
         div[data-testid="stMetricValue"] { font-size: 36px !important; font-weight: 800 !important; }
         div[data-testid="stMetricLabel"] { font-size: 12px !important; text-transform: uppercase !important; font-weight: 700 !important; color: #64748b !important; }
+        
+        /* STRICT SIDEBAR STYLING FOR MAXIMUM VISIBILITY */
         .stSidebar { background-color: #0f172a !important; }
+        
+        .sidebar-brand-box {
+            background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%) !important; 
+            padding: 22px !important; 
+            border-radius: 16px !important; 
+            text-align: center !important; 
+            margin-bottom: 20px !important; 
+            border: 2px solid #334155 !important; 
+            box-shadow: 0 6px 12px rgba(0,0,0,0.4) !important;
+        }
+        .sidebar-title {
+            color: #38bdf8 !important; 
+            font-size: 28px !important; 
+            font-weight: 900 !important; 
+            margin: 0 0 6px 0 !important; 
+            padding: 0 !important; 
+            text-shadow: 0 2px 4px rgba(0,0,0,0.5) !important;
+            letter-spacing: 0.5px !important;
+        }
+        .sidebar-subtitle {
+            color: #ff477e !important; 
+            font-size: 14px !important; 
+            font-weight: 800 !important; 
+            text-transform: uppercase !important; 
+            letter-spacing: 1px !important; 
+            margin-bottom: 12px !important;
+        }
+        .sidebar-id-badge {
+            color: #ffffff !important; 
+            font-size: 13px !important; 
+            font-weight: 700 !important; 
+            font-family: monospace !important; 
+            background: #1e293b !important; 
+            padding: 6px 12px !important; 
+            border-radius: 8px !important; 
+            display: inline-block !important; 
+            border: 1px solid #475569 !important;
+        }
+        
         .stButton>button {
             background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important; color: white !important;
             font-weight: 700 !important; padding: 12px 24px !important; border-radius: 12px !important; border: none !important;
@@ -126,17 +171,17 @@ if not st.session_state.logged_in:
     st.stop()
 
 # -------------------------
-# SIDEBAR NAVIGATION (FIXED HIGH-CONTRAST VISIBILITY)
+# SIDEBAR NAVIGATION (PERFECT VISIBILITY CONTROL)
 # -------------------------
 st.sidebar.markdown("""
-    <div style="background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); padding: 20px; border-radius: 16px; text-align: center; margin-bottom: 20px; border: 1px solid #334155; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">
-        <h2 style="color: #38bdf8 !important; font-size: 26px !important; font-weight: 900 !important; margin: 0 0 4px 0 !important; padding: 0 !important; letter-spacing: 0.5px;">Deep CSC</h2>
-        <div style="color: #f43f5e !important; font-size: 13px !important; font-weight: 700 !important; text-transform: uppercase !important; letter-spacing: 1px !important; margin-bottom: 8px;">Deep Digital Seva Kendra</div>
-        <div style="color: #cbd5e1 !important; font-size: 12px !important; font-weight: 600 !important; font-family: monospace !important; background: rgba(255,255,255,0.06); padding: 4px 8px; border-radius: 6px; display: inline-block; border: 1px solid rgba(255,255,255,0.1);">ID: 256423250015</div>
+    <div class="sidebar-brand-box">
+        <div class="sidebar-title">Deep CSC</div>
+        <div class="sidebar-subtitle">Deep Digital Seva Kendra</div>
+        <div class="sidebar-id-badge">ID: 256423250015</div>
     </div>
 """, unsafe_allow_html=True)
 
-st.sidebar.markdown(f"<p style='color: #94a3b8; font-size: 14px;'>Operator: <b style='color:#f8fafc;'>{USERNAME} (Deepak)</b></p>", unsafe_allow_html=True)
+st.sidebar.markdown(f"<p style='color: #cbd5e1; font-size: 14px; margin-left: 5px;'>Operator: <b style='color:#38bdf8;'>{USERNAME} (Deepak)</b></p>", unsafe_allow_html=True)
 app_mode = st.sidebar.selectbox("Navigate System", ["📤 Upload & Process", "📊 Dashboard & History"])
 
 st.sidebar.markdown("<br><br><hr style='border-color: #1e293b;'>", unsafe_allow_html=True)
