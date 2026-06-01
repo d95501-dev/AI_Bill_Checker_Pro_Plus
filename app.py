@@ -17,24 +17,68 @@ import time
 # PAGE CONFIG & BRANDING
 # -------------------------
 st.set_page_config(
-    page_title="AI Bill Checker Pro+",
+    page_title="AI Bill Checker Premium",
     page_icon="🧾",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Premium Enterprise Styling Injection
+# Premium Custom CSS Injection for Modern Dashboard Theme
 st.markdown("""
     <style>
-        /* Global CSS Overrides */
-        .main { background-color: #f8f9fa; }
-        .stMetric { background-color: #ffffff; padding: 20px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); border-left: 5px solid #4F46E5; }
-        div[data-testid="stMetricValue"] { font-size: 24px; font-weight: 700; color: #1E293B; }
-        div[data-testid="stMetricLabel"] { font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: #64748B; }
-        .stButton>button { border-radius: 6px; font-weight: 500; transition: all 0.3s ease; }
-        .stButton>button:hover { transform: translateY(-1px); box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        /* Global Background and Typography styling */
+        .main { background-color: #fcfdfe; }
+        h1, h2, h3 { font-family: 'Inter', sans-serif; color: #0f172a !important; font-weight: 800 !important; }
+        
+        /* Custom Modern Metric Cards styling */
+        div[data-testid="stMetric"] {
+            background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+            padding: 24px;
+            border-radius: 16px;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05), 0 4px 6px -4px rgba(0, 0, 0, 0.05);
+            border: 1px solid #e2e8f0;
+            transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        div[data-testid="stMetric"]:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+        }
+        div[data-testid="stMetricValue"] {
+            font-size: 32px !important;
+            font-weight: 800 !important;
+            color: #4f46e5 !important;
+            letter-spacing: -0.5px;
+        }
+        div[data-testid="stMetricLabel"] {
+            font-size: 14px !important;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            font-weight: 600 !important;
+            color: #64748b !important;
+            margin-bottom: 8px;
+        }
+        
+        /* Form, Input elements and Buttons */
+        .stButton>button {
+            background: linear-gradient(135deg, #4f46e5 0%, #3b82f6 100%);
+            color: white !important;
+            font-weight: 600 !important;
+            padding: 12px 24px;
+            border-radius: 12px;
+            border: none;
+            box-shadow: 0 4px 6px -1px rgba(79, 70, 229, 0.2);
+            transition: all 0.2s ease;
+        }
+        .stButton>button:hover {
+            transform: scale(1.02);
+            box-shadow: 0 10px 15px -3px rgba(79, 70, 229, 0.4);
+        }
+        
+        /* Block sections container box design */
+        .block-container { padding-top: 2rem !important; }
+        hr { border-top: 1px solid #e2e8f0; }
     </style>
-""", unsafe_allow_html=True) # <-- Isko "unsafe_allow_html=True" kar dein
+""", unsafe_allow_html=True)
 
 # -------------------------
 # DATABASE SETUP
@@ -105,7 +149,7 @@ if not st.session_state.logged_in:
 # -------------------------
 # SIDEBAR NAVIGATION
 # -------------------------
-st.sidebar.markdown("### 🏢 Core Admin Terminal")
+st.sidebar.markdown("<h2 style='font-size: 20px; margin-bottom: 0px;'>🏢 Core Admin Terminal</h2>", unsafe_allow_html=True)
 st.sidebar.success(f"Active User: {USERNAME}")
 app_mode = st.sidebar.selectbox("Navigate System", ["📤 Upload & Process", "📊 Dashboard & History"])
 
@@ -144,7 +188,7 @@ def validate_gst(gst_str):
 # -------------------------
 if app_mode == "📤 Upload & Process":
     st.title("🧾 AI Multi-Bill OCR Processor")
-    st.markdown("Automated structural data parsing pipeline powered by Gemini Vision Core.")
+    st.markdown("<p style='color: #64748b; font-size: 16px; margin-top:-15px;'>Automated structural data parsing pipeline powered by Gemini Vision Core.</p>", unsafe_allow_html=True)
     
     uploaded_files = st.file_uploader(
         "Drop batch bill images below (Multi-upload supported)",
@@ -164,7 +208,7 @@ if app_mode == "📤 Upload & Process":
                 st.image(image, caption=f"Source: {file.name}", use_container_width=True)
                 
             with col_act:
-                if st.button(f"⚡ Execute AI Analysis", key=f"btn_{idx}", use_container_width=True, type="primary"):
+                if st.button(f"⚡ Execute AI Analysis", key=f"btn_{idx}", use_container_width=True):
                     with st.spinner("AI engine parsing structural metadata..."):
                         prompt = """
                         Analyze this bill image carefully.
@@ -237,7 +281,7 @@ if app_mode == "📤 Upload & Process":
                                 items = data.get("items", [])
                                 if items:
                                     df = pd.DataFrame(items)
-                                    st.markdown("#### Detailed Line-Item Breakdown")
+                                    st.markdown("<h4 style='font-size:18px; margin-top:20px;'>Detailed Line-Item Breakdown</h4>", unsafe_allow_html=True)
                                     st.dataframe(df, use_container_width=True, hide_index=True)
                                     
                                     if "amount" in df.columns:
@@ -254,7 +298,7 @@ if app_mode == "📤 Upload & Process":
                                 diff = abs(calculated_total - bill_total)
                                 status_txt = "Matched" if diff < 1 else "Mismatch"
                                 
-                                st.markdown("#### Arithmetic Audit Engine")
+                                st.markdown("<h4 style='font-size:18px; margin-top:20px;'>Arithmetic Audit Engine</h4>", unsafe_allow_html=True)
                                 x1, x2 = st.columns(2)
                                 x1.metric("Summation of Extracted Items", f"₹{calculated_total:,.2f}")
                                 x2.metric("Declared Invoice Total", f"₹{bill_total:,.2f}")
@@ -293,80 +337,4 @@ if app_mode == "📤 Upload & Process":
                                     with open(pdf_temp.name, "rb") as f:
                                         st.download_button("📄 Download Sign-off PDF", f.read(), file_name=f"{shop_name}_receipt.pdf", mime="application/pdf", use_container_width=True)
                                 with ut3:
-                                    message = f"🧾 *AI Bill Alert*\nShop: {shop_name}\nDate: {bill_date}\nTotal: ₹{bill_total}\nStatus: {status_txt}"
-                                    wa_url = "https://wa.me/?text=" + urllib.parse.quote(message)
-                                    st.link_button("📱 Forward Summary to WhatsApp", wa_url, use_container_width=True)
-                                    
-                            except Exception as parse_err:
-                                st.error(f"Structural Parsing Fault: {str(parse_err)}")
-
-# -------------------------
-# MODULE 2: DASHBOARD & HISTORY (PROFESSIONAL UPGRADE)
-# -------------------------
-elif app_mode == "📊 Dashboard & History":
-    st.title("📊 Financial Operations Command Center")
-    st.markdown("Real-time telemetry, duplicate transaction logs, and ledger integrity checks.")
-    
-    conn = sqlite3.connect("bills.db")
-    df_db = pd.read_sql_query("SELECT * FROM bills ORDER BY id DESC", conn)
-    conn.close()
-    
-    if df_db.empty:
-        st.info("System Engine reporting zero active logs. Process incoming invoices to unlock dashboard diagnostics.")
-    else:
-        # KPI Engineering Panel
-        total_spent = df_db["total"].sum()
-        total_invoices = len(df_db)
-        mismatched_count = len(df_db[df_db["status"] == "Mismatch"])
-        
-        db1, db2, db3 = st.columns(3)
-        db1.metric("💰 Aggregate Pipeline Spend", f"₹{total_spent:,.2f}")
-        db2.metric("📄 Corporate Vouchers Audited", f"{total_invoices} Invoices")
-        
-        # Color coding metrics manually using delta-color contextual mapping
-        if mismatched_count > 0:
-            db3.metric("⚠️ Failed Integrity Mismatches", f"{mismatched_count} Incidents")
-        else:
-            db3.metric("✅ System Integrity Audit", "100% Cleared")
-            
-        st.markdown("---")
-        
-        # Advanced Multi-View Analytics Engine Block
-        st.markdown("### 📈 Visual Intelligence Analytics")
-        graph_col1, graph_col2 = st.columns([2, 1], gap="large")
-        
-        with graph_col1:
-            st.markdown("**Vendor Distribution Analytics (Gross Allocation Value)**")
-            chart_data = df_db.groupby("shop_name")["total"].sum().reset_index().sort_values(by="total", ascending=False).head(8)
-            chart_data = chart_data.set_index("shop_name")
-            st.bar_chart(chart_data, y="total", color="#4F46E5")
-            
-        with graph_col2:
-            st.markdown("**Ledger Status Audit Breakdown**")
-            status_distribution = df_db["status"].value_counts().reset_index()
-            status_distribution.columns = ["Audit Status", "Volume Counter"]
-            st.dataframe(status_distribution, use_container_width=True, hide_index=True)
-            
-        st.markdown("---")
-        
-        # Dynamic Search, Controls & Registry Audit Logging
-        st.markdown("### 🔍 Centralized Ledger Records Registry")
-        
-        query_col, export_col = st.columns([3, 1], gap="medium")
-        with query_col:
-            search_query = st.text_input("⚡ Smart Filter (Input target Vendor Name / Retail Shop keyword string)")
-        with export_col:
-            st.markdown("<div style='height:28px;'></div>", unsafe_style_html=True)
-            master_excel_buffer = BytesIO()
-            with pd.ExcelWriter(master_excel_buffer, engine="openpyxl") as writer:
-                df_db.to_excel(writer, index=False, sheet_name="Master DB Sheet")
-            st.download_button("📥 Master Export DB Logs", data=master_excel_buffer.getvalue(), file_name="Corporate_Master_Ledger.xlsx", mime="application/vnd.ms-excel", use_container_width=True)
-            
-        filtered_df = df_db
-        if search_query:
-            filtered_df = df_db[df_db["shop_name"].str.contains(search_query, case=False, na=False)]
-            
-        # Clean formatting for presentation layer data tables
-        display_df = filtered_df.copy()
-        display_df.columns = ["Log ID", "Vendor Station", "Invoice Date", "Registered GSTIN", "Invoice Cost (₹)", "Computed Cost (₹)", "Audit Evaluation", "System Timestamp"]
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
+                                    message = f"🧾 *AI Bill Alert*\nShop: {shop_name}\nDate: {bill_date}\nTotal: ₹{bill_total}\nStatus: {
