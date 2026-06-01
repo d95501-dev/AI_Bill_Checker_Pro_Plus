@@ -114,7 +114,7 @@ st.markdown("""
 def init_db():
     conn = sqlite3.connect("bills.db")
     cursor = conn.cursor()
-    cursor.execute('''
+    cursor.execute("""
         CREATE TABLE IF NOT EXISTS bills (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             shop_name TEXT,
@@ -125,7 +125,7 @@ def init_db():
             status TEXT,
             timestamp TEXT
         )
-    ''')
+    """)
     conn.commit()
     conn.close()
 
@@ -139,6 +139,30 @@ def insert_bill(shop, date, gst, total, calc_total, status):
     if duplicate:
         conn.close()
         return False, "Duplicate entry detected!"
-    cursor.execute('''
+    cursor.execute("""
         INSERT INTO bills (shop_name, bill_date, gst_number, total, calculated_total, status, timestamp)
-        VALUES (?, ?, ?,
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (shop, date, gst, total, calc_total, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+    conn.commit()
+    conn.close()
+    return True, "Successfully logged into DB"
+
+def clear_db():
+    conn = sqlite3.connect("bills.db")
+    cursor = conn.cursor()
+    cursor.execute("DROP TABLE IF EXISTS bills")
+    conn.commit()
+    conn.close()
+    init_db()
+
+# -------------------------
+# LOGIN SYSTEM
+# -------------------------
+USERNAME = st.secrets.get("APP_USERNAME", "admin")
+PASSWORD = st.secrets.get("APP_PASSWORD", "password123")
+
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+
+if not st.session_state.logged_in:
+    st.markdown("<div style='text-align: center; padding: 20px;'><h2 style='color: #4f46e5;
