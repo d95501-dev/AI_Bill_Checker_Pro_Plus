@@ -14,10 +14,27 @@ from datetime import datetime
 import time
 
 # -------------------------
-# PAGE CONFIG & DATABASE
+# PAGE CONFIG & CSS (ORIGINAL PREMIUM LOOK)
 # -------------------------
-st.set_page_config(page_title="Deep CSC - AI Bill Processor Premium", page_icon="🧾", layout="wide")
+st.set_page_config(page_title="Deep CSC - AI Bill Processor", page_icon="🧾", layout="wide")
 
+st.markdown("""
+    <style>
+        .main { background-color: #f8fafc; }
+        .deep-csc-header {
+            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #311042 100%);
+            padding: 30px; border-radius: 24px; margin-bottom: 35px;
+            color: white;
+        }
+        .branding-text h1 { color: #38bdf8 !important; }
+        div[data-testid="stMetric"] { background: #ffffff; padding: 24px; border-radius: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+        .stSidebar { background-color: #0f172a !important; color: white; }
+    </style>
+""", unsafe_allow_html=True)
+
+# -------------------------
+# DATABASE & HELPERS
+# -------------------------
 def init_db():
     conn = sqlite3.connect("bills.db")
     cursor = conn.cursor()
@@ -28,51 +45,41 @@ def init_db():
 init_db()
 
 # -------------------------
-# UI HELPERS & COMPONENTS
+# MAIN APP
 # -------------------------
-def hardware_module():
-    st.subheader("🖥️ Hardware Connectivity Bridge")
-    with st.expander("🖨️ Scanner & Printer Console", expanded=True):
-        col_scan, col_print = st.columns(2)
-        with col_scan:
-            scan_dpi = st.select_slider("Select Resolution (DPI)", options=[150, 300, 600], value=300)
-            if st.button("🚀 Trigger Flatbed Scan"):
-                st.spinner("Connecting to Hardware...")
-                time.sleep(1)
-        with col_print:
-            if st.button("🖨️ Open System Print Dialog"):
-                st.components.v1.html("<script>window.print();</script>", height=0)
-
-# -------------------------
-# AUTH & SIDEBAR
-# -------------------------
-if "logged_in" not in st.session_state: st.session_state.logged_in = False
-
-if not st.session_state.logged_in:
-    # ... (Keep your Login UI code here) ...
-    st.stop()
-
-# Sidebar Navigation
 app_mode = st.sidebar.selectbox("Navigate System", ["📤 Upload & Process", "📊 Dashboard & History"])
 
-# -------------------------
-# MAIN APP FLOW
-# -------------------------
 if app_mode == "📤 Upload & Process":
-    st.markdown('<div class="deep-csc-header">...</div>', unsafe_allow_html=True)
+    st.markdown('<div class="deep-csc-header"><h1>🧾 AI Multi-Bill OCR Processor</h1></div>', unsafe_allow_html=True)
     
-    # 1. Hardware Interface
-    hardware_module()
-    
-    # 2. File Upload
-    uploaded_files = st.file_uploader("Drop batch bill images", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
-    
-    if uploaded_files:
-        for idx, file in enumerate(uploaded_files):
-            # ... (Your processing logic here: Image.open, API call, JSON parsing) ...
-            # Keep your existing logic from inside the original loop here.
-            pass
+    # Scanner/Printer logic
+    with st.expander("🖨️ Hardware Controller"):
+        if st.button("🚀 Trigger Scan"): st.success("Scan Initialized...")
+        if st.button("🖨️ Print Report"): st.components.v1.html("<script>window.print();</script>", height=0)
+
+    uploaded_files = st.file_uploader("Upload Bills", accept_multiple_files=True)
+    # ... (Rest of your processing logic)
 
 elif app_mode == "📊 Dashboard & History":
-    # ... (Keep your Dashboard code here) ...
-    pass
+    st.markdown('<div class="deep-csc-header"><h1>📊 Financial Operations Command Center</h1></div>', unsafe_allow_html=True)
+    
+    conn = sqlite3.connect("bills.db")
+    df_db = pd.read_sql_query("SELECT * FROM bills ORDER BY id DESC", conn)
+    conn.close()
+
+    if not df_db.empty:
+        # Metrics Cards
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Total Spend", f"₹{df_db['total'].sum():,.2f}")
+        col2.metric("Bills Audited", len(df_db))
+        col3.metric("Status", "Operational")
+
+        # Charts
+        st.subheader("📈 Top Vendors Distribution")
+        chart_data = df_db.groupby("shop_name")["total"].sum()
+        st.bar_chart(chart_data)
+
+        # Full Table
+        st.dataframe(df_db, use_container_width=True)
+    else:
+        st.info("No data available yet. Process some bills first!")
