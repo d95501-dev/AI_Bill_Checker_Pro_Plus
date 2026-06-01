@@ -109,7 +109,7 @@ st.markdown("""
         .stButton>button {
             background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important;
             color: white !important;
-            font-weight: 700 Triant !important;
+            font-weight: 700 !important;
             padding: 12px 24px !important;
             border-radius: 12px !important;
             border: none !important;
@@ -146,66 +146,4 @@ def init_db():
 
 init_db()
 
-def insert_bill(shop, date, gst, total, calc_total, status):
-    conn = sqlite3.connect("bills.db")
-    cursor = conn.cursor()
-    cursor.execute(
-        "SELECT id FROM bills WHERE shop_name=? AND bill_date=? AND total=?", 
-        (shop, date, total)
-    )
-    duplicate = cursor.fetchone()
-    
-    if duplicate:
-        conn.close()
-        return False, "Duplicate detected in Database!"
-        
-    cursor.execute('''
-        INSERT INTO bills (shop_name, bill_date, gst_number, total, calculated_total, status, timestamp)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-    ''', (shop, date, gst, total, calc_total, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    conn.commit()
-    conn.close()
-    return True, "Successfully saved to DB"
-
-# -------------------------
-# LOGIN SYSTEM
-# -------------------------
-USERNAME = st.secrets.get("APP_USERNAME", "admin")
-PASSWORD = st.secrets.get("APP_PASSWORD", "password123")
-
-if "logged_in" not in st.session_state:
-    st.session_state.logged_in = False
-
-if not st.session_state.logged_in:
-    st.markdown("""
-        <div style='text-align: center; padding: 20px;'>
-            <h2 style='color: #4f46e5; font-size: 42px; font-weight:900; letter-spacing:-1px;'>Deep CSC</h2>
-            <p style='color: #64748b; font-size: 16px; margin-top: -10px;'>Authorized Digital Seva AI Portal</p>
-        </div>
-    """, unsafe_allow_html=True)
-    st.title("🔐 System Login Proxy")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-
-    if st.button("Login Server", use_container_width=True):
-        if username == USERNAME and password == PASSWORD:
-            st.session_state.logged_in = True
-            st.rerun()
-        else:
-            st.error("Invalid Username or Password Credentials")
-    st.stop()
-
-# -------------------------
-# SIDEBAR NAVIGATION
-# -------------------------
-st.sidebar.markdown("""
-    <div style='background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); padding: 18px; border-radius: 16px; text-align: center; margin-bottom: 20px; border: 1px solid #334155;'>
-        <h2 style='color: #38bdf8 !important; font-size: 24px; font-weight: 900; margin: 0;'>Deep CSC</h2>
-        <span style='color: #f43f5e; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 1px;'>Deep Digital Seva Kendra</span>
-        <div style='color: #94a3b8; font-size: 11px; margin-top: 5px; border-top: 1px dashed #334155; padding-top: 5px;'>ID: 256423250015</div>
-    </div>
-""", unsafe_allow_html=True)
-st.sidebar.markdown(f"<p style='color: #94a3b8; font-size: 14px;'>Operator: <b style='color:#f8fafc;'>{USERNAME} (Deepak)</b></p>", unsafe_allow_html=True)
-app_mode = st.sidebar.selectbox("Navigate System", ["📤 Upload & Process", "📊 Dashboard & History"])
-
-st.sidebar.markdown("<br
+def insert_bill(shop, date, gst, total, calc_total, status
