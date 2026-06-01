@@ -215,6 +215,31 @@ def validate_gst(gst_str):
     return False, clean_gst
 
 # -------------------------
+# MODULE 1: UPLOAD & PROCESS (UPDATED WITH HARDWARE BRIDGE)
+# -------------------------
+if app_mode == "📤 Upload & Process":
+    st.markdown('<div class="deep-csc-header">...</div>', unsafe_allow_html=True) # (Keep your existing header)
+    
+    # HARDWARE BRIDGE ADDITION
+    st.subheader("🖥️ Hardware Connectivity Bridge")
+    hw_tab1, hw_tab2 = st.tabs(["📷 Scanner (Camera Input)", "🖨️ Printer Interface"])
+    
+    with hw_tab1:
+        st.info("Direct scanner interface se bill scan karein.")
+        scan_file = st.camera_input("Scanner Device Feed")
+        if scan_file:
+            st.success("Image successfully captured from hardware buffer!")
+            uploaded_files = [scan_file] # Isko process mein pass karenge
+            
+    with hw_tab2:
+        st.info("Report ko physical printer par bhejne ke liye niche click karein.")
+        if st.button("🖨️ Open Print Dialog"):
+            # JavaScript use karke browser ka print window trigger karte hain
+            js = "window.print();"
+            st.components.v1.html(f"<script>{js}</script>", height=0)
+
+    # ... Yaha se aapka existing 'uploaded_files' wala processing code continue karein ...
+# -------------------------
 # MODULE 1: UPLOAD & PROCESS
 # -------------------------
 if app_mode == "📤 Upload & Process":
