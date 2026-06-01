@@ -126,9 +126,16 @@ if not st.session_state.logged_in:
     st.stop()
 
 # -------------------------
-# SIDEBAR NAVIGATION
+# SIDEBAR NAVIGATION (FIXED HIGH-CONTRAST VISIBILITY)
 # -------------------------
-st.sidebar.markdown("<div style='background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); padding: 18px; border-radius: 16px; text-align: center; margin-bottom: 20px; border: 1px solid #334155;'><h2 style='color: #38bdf8 !important; font-size: 24px; font-weight: 900; margin: 0;'>Deep CSC</h2><span style='color: #f43f5e; font-size: 11px; font-weight: 700;'>Deep Digital Seva Kendra</span><div style='color: #94a3b8; font-size: 11px; margin-top: 5px;'>ID: 256423250015</div></div>", unsafe_allow_html=True)
+st.sidebar.markdown("""
+    <div style="background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%); padding: 20px; border-radius: 16px; text-align: center; margin-bottom: 20px; border: 1px solid #334155; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">
+        <h2 style="color: #38bdf8 !important; font-size: 26px !important; font-weight: 900 !important; margin: 0 0 4px 0 !important; padding: 0 !important; letter-spacing: 0.5px;">Deep CSC</h2>
+        <div style="color: #f43f5e !important; font-size: 13px !important; font-weight: 700 !important; text-transform: uppercase !important; letter-spacing: 1px !important; margin-bottom: 8px;">Deep Digital Seva Kendra</div>
+        <div style="color: #cbd5e1 !important; font-size: 12px !important; font-weight: 600 !important; font-family: monospace !important; background: rgba(255,255,255,0.06); padding: 4px 8px; border-radius: 6px; display: inline-block; border: 1px solid rgba(255,255,255,0.1);">ID: 256423250015</div>
+    </div>
+""", unsafe_allow_html=True)
+
 st.sidebar.markdown(f"<p style='color: #94a3b8; font-size: 14px;'>Operator: <b style='color:#f8fafc;'>{USERNAME} (Deepak)</b></p>", unsafe_allow_html=True)
 app_mode = st.sidebar.selectbox("Navigate System", ["📤 Upload & Process", "📊 Dashboard & History"])
 
