@@ -156,4 +156,104 @@ if st.sidebar.button("🚪 Terminate Session", use_container_width=True):
 # -------------------------
 api_key = st.secrets.get("GEMINI_API_KEY", "")
 if not api_key:
-    st.error
+    st.error("Please configure GEMINI_API_KEY in your Streamlit secrets.")
+    st.stop()
+
+genai.configure(api_key=api_key)
+try:
+    model = genai.GenerativeModel("gemini-2.5-flash")
+except Exception as e:
+    st.error(f"Model Error: {e}")
+    st.stop()
+
+# -------------------------
+# HELPER VALIDATIONS
+# -------------------------
+def validate_gst(gst_str):
+    gst_regex = r'^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$'
+    clean_gst = re.sub(r'[^A-Z0-9]', '', gst_str.upper())
+    if re.match(gst_regex, clean_gst):
+        return True, clean_gst
+    return False, clean_gst
+
+# -------------------------
+# MODULE 1: UPLOAD & PROCESS
+# -------------------------
+if app_mode == "📤 Upload & Process":
+    st.title("🧾 AI Multi-Bill OCR Processor")
+    st.markdown("<p style='color: #64748b; font-size: 16px; margin-top:-15px;'>Automated structural data parsing pipeline powered by Gemini Vision Core.</p>", unsafe_allow_html=True)
+    
+    uploaded_files = st.file_uploader(
+        "Drop batch bill images below (Multi-upload supported)",
+        type=["jpg", "jpeg", "png"],
+        accept_multiple_files=True
+    )
+
+    if uploaded_files:
+        for idx, file in enumerate(uploaded_files):
+            st.markdown("---")
+            st.subheader(f"📄 Processing Block [{idx+1}]: {file.name}")
+            
+            image = Image.open(file)
+            col_img, col_act = st.columns([1, 2], gap="large")
+            
+            with col_img:
+                st.image(image, caption=f"Source: {file.name}", use_container_width=True)
+                
+            with col_act:
+                if st.button(f"⚡ Execute AI Analysis", key=f"btn_{idx}", use_container_width=True):
+                    with st.spinner("AI engine parsing structural metadata..."):
+                        prompt = """
+                        Analyze this bill image carefully.
+                        Extract:
+                        - shop_name
+                        - bill_date
+                        - gst_number
+                        - items
+                        - total
+
+                        Return ONLY valid JSON format mapping the structure below. Do not output anything except pure JSON code block.
+                        {
+                          "shop_name":"",
+                          "bill_date":"",
+                          "gst_number":"",
+                          "items":[
+                            { "name":"", "qty":"", "rate":"", "amount":"" }
+                          ],
+                          "total":""
+                        }
+                        """
+                        
+                        response = None
+                        max_retries = 3
+                        retry_delay = 15
+                        
+                        for attempt in range(max_retries):
+                            try:
+                                response = model.generate_content([prompt, image])
+                                break
+                            except Exception as api_err:
+                                err_msg = str(api_err)
+                                if "429" in err_msg or "quota" in err_msg.lower():
+                                    if attempt < max_retries - 1:
+                                        st.warning(f"⏳ Rate Limit hit! Auto-retrying step in {retry_delay}s... (Cycle {attempt + 1}/{max_retries})")
+                                        time.sleep(retry_delay)
+                                        retry_delay *= 2
+                                    else:
+                                        st.error("❌ Quota Exhausted! Switch to Pay-As-You-Go plan on Google AI Studio.")
+                                        st.stop()
+                                else:
+                                    st.error(f"Engine Core Crash: {err_msg}")
+                                    st.stop()
+
+                        if response:
+                            try:
+                                text = response.text.strip().replace("```json", "").replace("```", "")
+                                match = re.search(r"\{.*\}", text, re.DOTALL)
+                                if match:
+                                    text = match.group(0)
+                                    
+                                data = json.loads(text)
+                                
+                                shop_name = data.get("shop_name", "Unknown Shop")
+                                bill_date = data.get("bill_date",
