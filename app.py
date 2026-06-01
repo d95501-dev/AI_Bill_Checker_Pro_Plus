@@ -1,4 +1,4 @@
-import streamlit as st
+  import streamlit as st
 import google.generativeai as genai
 from PIL import Image
 import pandas as pd
@@ -11,7 +11,7 @@ import json
 import re
 import sqlite3
 from datetime import datetime
-import time  # Added for API Rate-Limit delay control
+import time
 
 # -------------------------
 # PAGE CONFIG
@@ -172,131 +172,22 @@ if app_mode == "📤 Upload & Process":
                         
                         response = None
                         max_retries = 3
-                        retry_delay = 15  # Base wait window in seconds
+                        retry_delay = 15
                         
-                        # Loop for Handling Quota / Rate-Limit (429) Errors
                         for attempt in range(max_retries):
                             try:
                                 response = model.generate_content([prompt, image])
-                                break  # Break loop if execution succeeds
+                                break
                             except Exception as api_err:
                                 err_msg = str(api_err)
                                 if "429" in err_msg or "quota" in err_msg.lower():
                                     if attempt < max_retries - 1:
                                         st.warning(f"⏳ Rate Limit / Quota Exhausted! Retrying automated pass in {retry_delay}s... (Attempt {attempt + 1}/{max_retries})")
                                         time.sleep(retry_delay)
-                                        retry_delay *= 2  # Double the wait time for the next cycle
+                                        retry_delay *= 2
                                     else:
                                         st.error("❌ Quota Completely Exhausted for today on Free Tier. Please upgrade to Pay-As-You-Go on Google AI Studio or use a new API Key.")
                                         st.stop()
                                 else:
                                     st.error(f"Execution Stop Engine Error: {err_msg}")
-                                    st.stop()
-
-                        # Process response if available
-                        if response:
-                            try:
-                                text = response.text.strip().replace("```json", "").replace("```", "")
-                                
-                                match = re.search(r"\{.*\}", text, re.DOTALL)
-                                if match:
-                                    text = match.group(0)
-                                    
-                                data = json.loads(text)
-                                
-                                shop_name = data.get("shop_name", "Unknown Shop")
-                                bill_date = data.get("bill_date", datetime.now().strftime("%Y-%m-%d"))
-                                gst_number = data.get("gst_number", "N/A")
-                                
-                                st.markdown(f"### 🏪 parsed: **{shop_name}**")
-                                c1, c2, c3 = st.columns(3)
-                                c1.metric("Date String", bill_date)
-                                
-                                is_valid_gst, formatted_gst = validate_gst(gst_number)
-                                if gst_number != "N/A" and is_valid_gst:
-                                    c2.success(f"✅ GST Valid: {formatted_gst}")
-                                elif gst_number != "N/A":
-                                    c2.warning(f"⚠️ Invalid GST Format: {gst_number}")
-                                else:
-                                    c2.info("GST Not Found")
-                                    
-                                items = data.get("items", [])
-                                if items:
-                                    df = pd.DataFrame(items)
-                                    st.dataframe(df, use_container_width=True, hide_index=True)
-                                    
-                                    if "amount" in df.columns:
-                                        df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
-                                    calculated_total = float(df["amount"].sum())
-                                else:
-                                    calculated_total = 0.0
-                                    
-                                try:
-                                    bill_total = float(str(data.get("total", 0)).replace(',', ''))
-                                except:
-                                    bill_total = 0.0
-                                    
-                                diff = abs(calculated_total - bill_total)
-                                status_txt = "Matched" if diff < 1 else "Mismatch"
-                                
-                                x1, x2 = st.columns(2)
-                                x1.metric("Calculated Cumulative Total", f"₹{calculated_total:,.2f}")
-                                x2.metric("Declared Invoice Total", f"₹{bill_total:,.2f}")
-                                
-                                if status_txt == "Matched":
-                                    st.success("✅ Auto-Arithmetic Check Pass: Bill Total Matched.")
-                                else:
-                                    st.error(f"❌ Verification Warning: Calculation mismatch of ₹{diff:,.2f}")
-                                    
-                                saved, db_msg = insert_bill(shop_name, bill_date, gst_number, bill_total, calculated_total, status_txt)
-                                if saved:
-                                    st.success(f"💾 Record committed to database: {db_msg}")
-                                else:
-                                    st.warning(f"🚨 Operational Skip: {db_msg}")
-                                    
-                                st.markdown("#### Actions & Exports")
-                                excel_buffer = BytesIO()
-                                with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-                                    pd.DataFrame(items).to_excel(writer, index=False, sheet_name="Items Output")
-                                    
-                                pdf_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-                                doc = SimpleDocTemplate(pdf_temp.name)
-                                styles = getSampleStyleSheet()
-                                elements = [
-                                    Paragraph(f"Invoice Summary: {shop_name}", styles["Title"]),
-                                    Spacer(1, 10),
-                                    Paragraph(f"Date: {bill_date} | GSTIN: {gst_number}", styles["Normal"]),
-                                    Paragraph(f"Verified Final Amount: INR {bill_total}", styles["Heading3"])
-                                ]
-                                doc.build(elements)
-                                
-                                ut1, ut2, ut3 = st.columns(3)
-                                with ut1:
-                                    st.download_button("📥 Download Excel Data", data=excel_buffer.getvalue(), file_name=f"{shop_name}_report.xlsx", mime="application/vnd.ms-excel")
-                                with ut2:
-                                    with open(pdf_temp.name, "rb") as f:
-                                        st.download_button("📄 Download PDF Summary", f.read(), file_name=f"{shop_name}_invoice.pdf", mime="application/pdf")
-                                with ut3:
-                                    message = f"🧾 *AI Bill Alert*\nShop: {shop_name}\nDate: {bill_date}\nTotal: ₹{bill_total}\nStatus: {status_txt}"
-                                    wa_url = "https://wa.me/?text=" + urllib.parse.quote(message)
-                                    st.link_button("📱 Forward to WhatsApp", wa_url)
-                                    
-                            except Exception as parse_err:
-                                st.error(f"Engine Core Error processing structural block: {str(parse_err)}")
-
-# -------------------------
-# MODULE 2: DASHBOARD & HISTORY
-# -------------------------
-elif app_mode == "📊 Dashboard & History":
-    st.title("📊 System Analytics & Operational DB Logs")
-    
-    conn = sqlite3.connect("bills.db")
-    df_db = pd.read_sql_query("SELECT * FROM bills ORDER BY id DESC", conn)
-    conn.close()
-    
-    if df_db.empty:
-        st.info("Database is empty. Please upload invoices to view metrics dashboard visualization elements.")
-    else:
-        total_spent = df_db["total"].sum()
-        total_invoices = len(df_db)
-        mismatched_count = len(df_db[df_db["status"] == "Mismatch
+                                    st.stop()                      
