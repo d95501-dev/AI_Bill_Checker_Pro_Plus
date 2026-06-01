@@ -165,4 +165,3 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
-    st.markdown("<div style='text-align: center; padding: 20px;'><h2 style='color: #4f46e5;
