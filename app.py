@@ -23,61 +23,53 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Premium Custom CSS Injection for Modern Fluid Layout
+# Premium Custom CSS Injection for Modern Dashboard Theme
 st.markdown("""
     <style>
-        /* Global Reset and Background */
-        .main { background: #fdfeff; }
+        /* Global Background and Typography styling */
+        .main { background-color: #f8fafc; }
         h1, h2, h3 { font-family: 'Inter', system-ui, sans-serif; color: #0f172a !important; font-weight: 800 !important; }
         
-        /* Glassmorphism Metric Cards Design */
+        /* Glassmorphism Metric Cards styling */
         div[data-testid="stMetric"] {
-            background: linear-gradient(135deg, #ffffff 0%, #f8fafc 100%);
+            background: linear-gradient(135deg, #ffffff 0%, #f1f5f9 100%);
             padding: 24px;
             border-radius: 16px;
             box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.04), 0 4px 6px -4px rgba(0, 0, 0, 0.04);
             border: 1px solid #e2e8f0;
-            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            transition: transform 0.2s ease;
         }
         div[data-testid="stMetric"]:hover {
             transform: translateY(-4px);
-            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.08), 0 8px 10px -6px rgba(0, 0, 0, 0.08);
-            border-color: #cbd5e1;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.06);
         }
         div[data-testid="stMetricValue"] {
-            font-size: 34px !important;
+            font-size: 32px !important;
             font-weight: 800 !important;
             color: #4f46e5 !important;
-            letter-spacing: -0.5px;
         }
         div[data-testid="stMetricLabel"] {
             font-size: 13px !important;
             text-transform: uppercase;
-            letter-spacing: 1.2px;
+            letter-spacing: 0.8px;
             font-weight: 700 !important;
             color: #64748b !important;
-            margin-bottom: 6px;
         }
         
-        /* Custom Stylish Buttons */
+        /* Modern Solid Buttons */
         .stButton>button {
             background: linear-gradient(135deg, #4f46e5 0%, #3b82f6 100%) !important;
             color: white !important;
             font-weight: 600 !important;
-            padding: 12px 24px !important;
-            border-radius: 12px !important;
+            padding: 10px 20px !important;
+            border-radius: 10px !important;
             border: none !important;
-            box-shadow: 0 4px 10px rgba(79, 70, 229, 0.25) !important;
-            transition: all 0.2s ease !important;
+            transition: all 0.2s ease;
         }
         .stButton>button:hover {
-            transform: translateY(-2px) scale(1.01) !important;
-            box-shadow: 0 10px 20px rgba(79, 70, 229, 0.35) !important;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3) !important;
         }
-        
-        /* Clean Sidebar Styles */
-        .css-17o0z9e, .stSidebar { background-color: #0f172a !important; }
-        .block-container { padding-top: 2rem !important; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -135,10 +127,33 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 
 if not st.session_state.logged_in:
-    st.title("🔐 AI Bill Checker Login", text_alignment="center")
+    st.title("🔐 AI Bill Checker Login")
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
 
-    if st.button("Login", use_container_width=True):
+    if st.button("Login"):
         if username == USERNAME and password == PASSWORD:
-            st.
+            st.session_state.logged_in = True
+            st.rerun()
+        else:
+            st.error("Invalid Username or Password")
+    st.stop()
+
+# -------------------------
+# SIDEBAR NAVIGATION
+# -------------------------
+st.sidebar.markdown("<h2 style='font-size: 18px; color: #f8fafc; margin-bottom: 5px;'>🏢 Control Center</h2>", unsafe_allow_html=True)
+st.sidebar.markdown(f"<p style='color: #94a3b8;'>Active Profile: <b>{USERNAME}</b></p>", unsafe_allow_html=True)
+app_mode = st.sidebar.selectbox("Navigate System", ["📤 Upload & Process", "📊 Dashboard & History"])
+
+st.sidebar.markdown("<br><hr>", unsafe_allow_html=True)
+if st.sidebar.button("🚪 Terminate Session", use_container_width=True):
+    st.session_state.logged_in = False
+    st.rerun()
+
+# -------------------------
+# GEMINI SETUP
+# -------------------------
+api_key = st.secrets.get("GEMINI_API_KEY", "")
+if not api_key:
+    st.error
