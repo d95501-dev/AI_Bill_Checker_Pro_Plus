@@ -214,7 +214,7 @@ def validate_gst(gst_str):
         return True, clean_gst
     return False, clean_gst
 
-    # ... Yaha se aapka existing 'uploaded_files' wala processing code continue karein ...
+# -------------------------
 # -------------------------
 # MODULE 1: UPLOAD & PROCESS
 # -------------------------
@@ -358,6 +358,37 @@ if app_mode == "📤 Upload & Process":
                             except Exception as parse_err:
                                 st.error(f"Structural Parsing Fault: {str(parse_err)}")
                                 # -------------------------
+# ADVANCED SCANNER & PRINTER INTERFACE
+# -------------------------
+def hardware_module():
+    st.markdown("### 🔌 Advanced Hardware Controller")
+    
+    # Scanner Control Panel
+    with st.expander("🖨️ Scanner & Printer Console", expanded=True):
+        col_scan, col_print = st.columns(2)
+        
+        with col_scan:
+            st.markdown("#### 📷 Scanner Interface")
+            scan_dpi = st.select_slider("Select Resolution (DPI)", options=[150, 300, 600], value=300)
+            scan_mode = st.radio("Mode", ["Color", "Grayscale", "Black & White"], horizontal=True)
+            
+            if st.button("🚀 Trigger Flatbed Scan"):
+                # Simulation of Scanner hardware interaction
+                with st.spinner("Connecting to TWAIN/WIA Driver..."):
+                    time.sleep(2) # Hardware handshake delay
+                    st.success(f"Scan initialized at {scan_dpi} DPI ({scan_mode})...")
+                    # Yaha se image auto-load ho jayegi processing ke liye
+                    
+        with col_print:
+            st.markdown("#### 🖨️ Printer Interface")
+            printer_name = st.selectbox("Select Printer", ["Default System Printer", "HP LaserJet Pro", "Canon Pixma"])
+            copies = st.number_input("Number of Copies", min_value=1, value=1)
+            
+            if st.button("🖨️ Send to Printer"):
+                js = "window.print();"
+                st.components.v1.html(f"<script>{js}</script>", height=0)
+                st.info(f"Sending document to {printer_name}...")
+
 # Module 1 mein isse call karein
 if app_mode == "📤 Upload & Process":
     # ... header code ...
