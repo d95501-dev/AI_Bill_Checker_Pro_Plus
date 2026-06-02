@@ -391,6 +391,30 @@ def hardware_module():
 
 # Module 1 mein isse call karein
 if app_mode == "📤 Upload & Process":
+    # -------------------------
+# MODULE 1: UPLOAD & PROCESS
+# -------------------------
+if app_mode == "📤 Upload & Process":
+    st.markdown('<div class="deep-csc-header">...</div>', unsafe_allow_html=True)
+    
+    # --- YAHAN PASTE KAREIN (Scanner Module) ---
+    with st.expander("📷 Advanced Scanner Interface", expanded=True):
+        st.markdown("Connect your hardware to initialize scanning workflow.")
+        scan_col1, scan_col2 = st.columns([1, 2])
+        with scan_col1:
+            res = st.selectbox("Resolution (DPI)", [150, 300, 600])
+        with scan_col2:
+            if st.button("🚀 Initialize Scanner & Capture"):
+                st.info("Scanner bridge initialized. Please place the bill on the scanner tray.")
+    # --------------------------------------------
+    
+    # Iske niche aapka purana file uploader code chalega
+    uploaded_files = st.file_uploader(
+        "Drop batch bill images below (Multi-upload supported)",
+        type=["jpg", "jpeg", "png"],
+        accept_multiple_files=True
+    )
+    # ... baki ka code ...
     # ... header code ...
     hardware_module() # Isse scanner aur printer ka panel wahan dikhega
     # ... baki processing code ...
