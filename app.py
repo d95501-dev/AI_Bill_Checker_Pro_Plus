@@ -214,30 +214,6 @@ def validate_gst(gst_str):
         return True, clean_gst
     return False, clean_gst
 
-# -------------------------
-# MODULE 1: UPLOAD & PROCESS (UPDATED WITH HARDWARE BRIDGE)
-# -------------------------
-if app_mode == "📤 Upload & Process":
-    st.markdown('<div class="deep-csc-header">...</div>', unsafe_allow_html=True) # (Keep your existing header)
-    
-    # HARDWARE BRIDGE ADDITION
-    st.subheader("🖥️ Hardware Connectivity Bridge")
-    hw_tab1, hw_tab2 = st.tabs(["📷 Scanner (Camera Input)", "🖨️ Printer Interface"])
-    
-    with hw_tab1:
-        st.info("Direct scanner interface se bill scan karein.")
-        scan_file = st.camera_input("Scanner Device Feed")
-        if scan_file:
-            st.success("Image successfully captured from hardware buffer!")
-            uploaded_files = [scan_file] # Isko process mein pass karenge
-            
-    with hw_tab2:
-        st.info("Report ko physical printer par bhejne ke liye niche click karein.")
-        if st.button("🖨️ Open Print Dialog"):
-            # JavaScript use karke browser ka print window trigger karte hain
-            js = "window.print();"
-            st.components.v1.html(f"<script>{js}</script>", height=0)
-
     # ... Yaha se aapka existing 'uploaded_files' wala processing code continue karein ...
 # -------------------------
 # MODULE 1: UPLOAD & PROCESS
@@ -382,37 +358,6 @@ if app_mode == "📤 Upload & Process":
                             except Exception as parse_err:
                                 st.error(f"Structural Parsing Fault: {str(parse_err)}")
                                 # -------------------------
-# ADVANCED SCANNER & PRINTER INTERFACE
-# -------------------------
-def hardware_module():
-    st.markdown("### 🔌 Advanced Hardware Controller")
-    
-    # Scanner Control Panel
-    with st.expander("🖨️ Scanner & Printer Console", expanded=True):
-        col_scan, col_print = st.columns(2)
-        
-        with col_scan:
-            st.markdown("#### 📷 Scanner Interface")
-            scan_dpi = st.select_slider("Select Resolution (DPI)", options=[150, 300, 600], value=300)
-            scan_mode = st.radio("Mode", ["Color", "Grayscale", "Black & White"], horizontal=True)
-            
-            if st.button("🚀 Trigger Flatbed Scan"):
-                # Simulation of Scanner hardware interaction
-                with st.spinner("Connecting to TWAIN/WIA Driver..."):
-                    time.sleep(2) # Hardware handshake delay
-                    st.success(f"Scan initialized at {scan_dpi} DPI ({scan_mode})...")
-                    # Yaha se image auto-load ho jayegi processing ke liye
-                    
-        with col_print:
-            st.markdown("#### 🖨️ Printer Interface")
-            printer_name = st.selectbox("Select Printer", ["Default System Printer", "HP LaserJet Pro", "Canon Pixma"])
-            copies = st.number_input("Number of Copies", min_value=1, value=1)
-            
-            if st.button("🖨️ Send to Printer"):
-                js = "window.print();"
-                st.components.v1.html(f"<script>{js}</script>", height=0)
-                st.info(f"Sending document to {printer_name}...")
-
 # Module 1 mein isse call karein
 if app_mode == "📤 Upload & Process":
     # ... header code ...
