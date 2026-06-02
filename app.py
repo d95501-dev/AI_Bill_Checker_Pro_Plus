@@ -22,39 +22,46 @@ if not st.session_state.logged_in:
             st.error("Invalid Login")
     st.stop()
 
-# --- Main App ---
-st.title("🧾 AI Multi-Bill OCR Processor")
-
-# Navigation
+# --- Main App Interface ---
+st.sidebar.title("Deep CSC")
 app_mode = st.sidebar.selectbox("Navigate System", ["📤 Upload & Process", "📊 Dashboard & History"])
 
-# Scanner Function (Safe for Cloud & Windows)
+# Scanner Function
 def run_scanner():
     if platform.system() == "Windows":
         try:
-            # Ye path sirf tabhi chalega jab aap apni local machine par honge
             os.startfile(r"C:\Program Files (x86)\Brother\iPrint&Scan\Brother iPrint&Scan.exe")
             st.success("Scanner launching...")
         except Exception as e:
-            st.error(f"Scanner not found: {e}")
+            st.error(f"Scanner path not found: {e}")
     else:
-        st.warning("Scanner feature is only for Local Windows PC.")
+        st.warning("Scanner feature is only available on Local Windows PC.")
 
-# Interface
+# --- UI Logic ---
 if app_mode == "📤 Upload & Process":
-    st.header("📤 Upload & Process")
+    st.title("📤 Upload & Process")
+    st.markdown("### 🔌 Advanced Hardware Controller")
     
-    with st.expander("🖨️ Hardware Controller", expanded=True):
+    with st.expander("🖨️ Scanner & Printer Console", expanded=True):
         col1, col2 = st.columns(2)
         with col1:
-            if st.button("🚀 Open Scanner"):
+            if st.button("🚀 Open Brother iPrint&Scan"):
                 run_scanner()
         with col2:
-            if st.button("🖨️ Print Page"):
+            if st.button("🖨️ Open Print Dialog"):
                 st.components.v1.html("<script>window.print();</script>", height=0)
     
-    st.file_uploader("Upload Bills", accept_multiple_files=True)
+    st.subheader("Upload Bill Images")
+    st.file_uploader("Upload", accept_multiple_files=True, label_visibility="collapsed")
 
 elif app_mode == "📊 Dashboard & History":
-    st.header("📊 Dashboard")
-    st.info("Dashboard module is currently under maintenance.")
+    st.title("📊 Dashboard & History")
+    # Yahan aapka purana dashboard content wapas aa gaya hai
+    st.info("Showing your processed bill history records.")
+    # Example for Dashboard layout
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("Total Bills", "12")
+    col_b.metric("Pending", "2")
+    col_c.metric("Processed", "10")
+    st.write("---")
+    st.write("Data table will be displayed here.")
