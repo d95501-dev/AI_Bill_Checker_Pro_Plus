@@ -2,100 +2,126 @@ import streamlit as st
 import google.generativeai as genai
 from PIL import Image
 import pandas as pd
-from io import BytesIO
 import json
-import re
+import subprocess
+import os
+import platform
 
-st.set_page_config(page_title="AI Bill Checker", page_icon="🧾", layout="wide")
-st.title("🧾 AI Bill Checker")
+# -----------------------------
+# ENVIRONMENT DETECTION
+# -----------------------------
+IS_LOCAL = (
+    platform.system() == "Windows"
+    and os.path.exists(r"C:\Program Files\NAPS2\NAPS2.Console.exe")
+)
 
+# Page Config
+st.set_page_config(page_title="Deep CSC - AI Bill Processor", layout="wide")
+
+# API Config
 try:
-    api_key = st.secrets["GEMINI_API_KEY"]
+    genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    model = genai.GenerativeModel("gemini-2.0-flash")
 except Exception:
-    st.error("GEMINI_API_KEY not found in Streamlit Secrets.")
+    st.error("API Key missing!")
     st.stop()
 
-genai.configure(api_key=api_key)
+# -----------------------------
+# FUNCTIONS
+# -----------------------------
+def analyze_bill(image):
+    prompt = """
+    Extract bill data and return ONLY valid JSON.
+    Format:
+    {"vendor_name": "", "date": "", "items": [{"name": "", "qty": "", "rate": "", "amount": ""}], "total": ""}
+    Rules: Return JSON only, no markdown, no explanation, no ```json, use empty string for null.
+    """
+    try:
+        response = model.generate_content([prompt, image])
+        if not response: return None
+        raw = getattr(response, "text", "")
+        if not raw: return None
 
-try:
-    model = genai.GenerativeModel("gemini-2.5-flash")
-except Exception as e:
-    st.error(f"Model Error: {e}")
-    st.stop()
+        raw = raw.replace("```json", "").replace("```", "").strip()
+        
+        try:
+            data = json.loads(raw)
+        except Exception:
+            start, end = raw.find("{"), raw.rfind("}")
+            if start != -1 and end != -1:
+                data = json.loads(raw[start:end + 1])
+            else: return None
 
-uploaded_file = st.file_uploader("Upload Bill Image", type=["jpg", "jpeg", "png"])
+        if not isinstance(data, dict): return None
+        
+        # Cleanup
+        data["vendor_name"] = str(data.get("vendor_name") or "")
+        data["date"] = str(data.get("date") or "")
+        data["items"] = data.get("items") or []
+        data["total"] = str(data.get("total") or "")
+        return data
+    except Exception as e:
+        st.error(f"AI Error: {e}")
+        return None
 
-if uploaded_file is not None:
-    image = Image.open(uploaded_file)
-    st.image(image, caption="Uploaded Bill", use_container_width=True)
+def show_results(data):
+    if not isinstance(data, dict):
+        st.error("Invalid bill structure")
+        return
 
-    if st.button("🔍 Analyze Bill"):
-        with st.spinner("Analyzing Bill..."):
-            prompt = """
-            Read the bill carefully.
-            Extract all bill items and total amount.
-            Return ONLY valid JSON.
-            {
-              "items":[{"name":"Milk","qty":"2","rate":"58","amount":"116"}],
-              "total":"116"
-            }
-            """
+    st.subheader("📋 Bill Details")
+    st.write(f"🏪 Vendor: {str(data.get('vendor_name') or 'Unknown')}")
+    st.write(f"🗓️ Invoice Date: {str(data.get('date') or 'Unknown')}")
+
+    items = data.get("items") or []
+    if isinstance(items, list) and items:
+        clean_rows = []
+        for item in items:
+            if isinstance(item, dict):
+                clean_rows.append({
+                    "Name": str(item.get("name") or ""),
+                    "Qty": str(item.get("qty") or ""),
+                    "Rate": str(item.get("rate") or ""),
+                    "Amount": str(item.get("amount") or "")
+                })
+        if clean_rows:
+            st.dataframe(pd.DataFrame(clean_rows), use_container_width=True)
+    
+    st.metric("💰 Total Amount", f"₹ {str(data.get('total') or '0')}")
+    with st.expander("Raw JSON"):
+        st.json(data)
+
+# -----------------------------
+# UI LOGIC
+# -----------------------------
+st.title("🧾 Deep CSC - AI Bill Processor")
+
+if IS_LOCAL:
+    tab1, tab2 = st.tabs(["📤 Upload & Process", "📠 Scanner"])
+else:
+    tab1 = st.container()
+
+with tab1:
+    uploaded_file = st.file_uploader("Upload Bill Image", type=["jpg", "jpeg", "png"])
+    if uploaded_file:
+        image = Image.open(uploaded_file)
+        st.image(image, use_column_width=True)
+        if st.button("🔍 Analyze Bill"):
+            with st.spinner("Analyzing..."):
+                data = analyze_bill(image)
+                show_results(data)
+
+if IS_LOCAL:
+    with tab2:
+        if st.button("🚀 Trigger Flatbed Scan"):
+            output_file = os.path.abspath("scan.jpg")
+            cmd = [r"C:\Program Files\NAPS2\NAPS2.Console.exe", "--driver", "wia", "--device", "Brother DCP-T820DW", "--source", "glass", "--dpi", "300", "-o", output_file, "-f"]
             try:
-                response = model.generate_content([prompt, image])
-                text = response.text.strip()
-                text = text.replace("```json", "").replace("```", "")
-
-                match = re.search(r"\{.*\}", text, re.DOTALL)
-                if match:
-                    text = match.group(0)
-
-                data = json.loads(text)
-
-                st.success("✅ Analysis Complete")
-
-                items = data.get("items", [])
-                if not items:
-                    st.warning("No bill items found.")
-                    st.stop()
-
-                df = pd.DataFrame(items)
-
-                st.subheader("📋 Bill Items")
-                st.dataframe(df, use_container_width=True, hide_index=True)
-
-                if "amount" in df.columns:
-                    df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
-
-                calculated_total = float(df["amount"].sum())
-
-                try:
-                    bill_total = float(data.get("total", 0))
-                except Exception:
-                    bill_total = 0
-
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.metric("💰 Calculated Total", f"₹{calculated_total:,.2f}")
-                with c2:
-                    st.metric("🧾 Bill Total", f"₹{bill_total:,.2f}")
-
-                diff = abs(calculated_total - bill_total)
-
-                if diff < 1:
-                    st.success("✅ Bill Total Matched")
-                else:
-                    st.error(f"❌ Bill Mismatch (Difference ₹{diff:,.2f})")
-
-                excel_buffer = BytesIO()
-                with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-                    df.to_excel(writer, index=False, sheet_name="Bill Items")
-
-                st.download_button(
-                    "📥 Download Excel",
-                    data=excel_buffer.getvalue(),
-                    file_name="bill_report.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-
+                subprocess.run(cmd, check=True)
+                if os.path.exists(output_file):
+                    img = Image.open(output_file)
+                    st.image(img, use_column_width=True)
+                    data = analyze_bill(img)
+                    show_results(data)
             except Exception as e:
-                st.error(f"Analysis Error: {e}")
+                st.error(f"Scanner error: {e}")
