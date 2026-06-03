@@ -738,3 +738,240 @@ def process_bill(image, file_bytes):
         fraud_score,
         status
     )
+# ==========================================================
+# UPLOAD UI + CAMERA + DASHBOARD
+# ==========================================================
+
+if app_mode == "📤 Upload & Process":
+
+    st.title("🧾 Deep CSC AI Bill Processor")
+
+    tab1, tab2 = st.tabs(
+        [
+            "📤 Upload Bills",
+            "📸 Camera Capture"
+        ]
+    )
+
+    # =====================================
+    # FILE UPLOAD
+    # =====================================
+
+    with tab1:
+
+        uploaded_files = st.file_uploader(
+            "Upload Bill Images",
+            type=["jpg", "jpeg", "png"],
+            accept_multiple_files=True
+        )
+
+        if uploaded_files:
+
+            st.success(
+                f"{len(uploaded_files)} file(s) loaded"
+            )
+
+            for file in uploaded_files:
+
+                st.markdown("---")
+
+                image = Image.open(file)
+
+                st.image(
+                    image,
+                    caption=file.name,
+                    width=350
+                )
+
+                if st.button(
+                    f"Analyze {file.name}",
+                    key=file.name
+                ):
+
+                    process_bill(
+                        image,
+                        file.getvalue()
+                    )
+
+    # =====================================
+    # CAMERA
+    # =====================================
+
+    with tab2:
+
+        camera = st.camera_input(
+            "Capture Bill"
+        )
+
+        if camera:
+
+            image = Image.open(camera)
+
+            st.image(
+                image,
+                caption="Captured Bill"
+            )
+
+            if st.button(
+                "Analyze Captured Bill"
+            ):
+
+                process_bill(
+                    image,
+                    camera.getvalue()
+                )
+
+# ==========================================================
+# DASHBOARD
+# ==========================================================
+
+elif app_mode == "📊 Dashboard":
+
+    st.title(
+        "📊 Financial Dashboard"
+    )
+
+    conn = sqlite3.connect(
+        "bills.db"
+    )
+
+    df = pd.read_sql_query(
+        "SELECT * FROM bills",
+        conn
+    )
+
+    conn.close()
+
+    if df.empty:
+
+        st.warning(
+            "No bills processed yet"
+        )
+
+    else:
+
+        total_bills = len(df)
+
+        total_amount = (
+            df["total"]
+            .fillna(0)
+            .sum()
+        )
+
+        avg_bill = (
+            total_amount
+            / total_bills
+        )
+
+        fraud_avg = (
+            df["fraud_score"]
+            .fillna(0)
+            .mean()
+        )
+
+        c1, c2, c3, c4 = st.columns(4)
+
+        c1.metric(
+            "Bills",
+            total_bills
+        )
+
+        c2.metric(
+            "Amount",
+            f"₹{total_amount:,.2f}"
+        )
+
+        c3.metric(
+            "Average",
+            f"₹{avg_bill:,.2f}"
+        )
+
+        c4.metric(
+            "Fraud Risk",
+            f"{fraud_avg:.1f}%"
+        )
+
+        st.markdown("---")
+
+        st.subheader(
+            "Vendor Analysis"
+        )
+
+        vendor_df = (
+            df.groupby(
+                "shop_name"
+            )["total"]
+            .sum()
+            .reset_index()
+            .sort_values(
+                "total",
+                ascending=False
+            )
+        )
+
+        st.bar_chart(
+            vendor_df.set_index(
+                "shop_name"
+            )
+        )
+
+        st.subheader(
+            "Category Analysis"
+        )
+
+        cat_df = (
+            df.groupby(
+                "category"
+            )["total"]
+            .sum()
+            .reset_index()
+        )
+
+        st.dataframe(
+            cat_df,
+            use_container_width=True
+        )
+
+        st.subheader(
+            "Bill History"
+        )
+
+        search = st.text_input(
+            "Search Vendor"
+        )
+
+        if search:
+
+            df = df[
+                df["shop_name"]
+                .str.contains(
+                    search,
+                    case=False,
+                    na=False
+                )
+            ]
+
+        st.dataframe(
+            df,
+            use_container_width=True
+        )
+
+# ==========================================================
+# SETTINGS
+# ==========================================================
+
+elif app_mode == "⚙ Settings":
+
+    st.title("⚙ Settings")
+
+    st.info(
+        f"Scanner Available: {IS_LOCAL}"
+    )
+
+    st.code(
+        r"C:\Program Files\NAPS2\NAPS2.Console.exe"
+    )
+
+    st.success(
+        "Enterprise Edition Active"
+    )
