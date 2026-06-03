@@ -1112,50 +1112,7 @@ def generate_pdf(
 
     return pdf_file.name
 
-pdf_path = generate_pdf(
-    shop_name,
-    bill_date,
-    gst_clean,
-    bill_total,
-    fraud_score
-)
 
-with open(pdf_path, "rb") as f:
-
-    st.download_button(
-        "📄 Download PDF",
-        f.read(),
-        file_name="bill_report.pdf",
-        mime="application/pdf"
-    )
-
-excel = BytesIO()
-
-df.to_excel(
-    excel,
-    index=False
-)
-
-st.download_button(
-    "📊 Download Excel",
-    excel.getvalue(),
-    file_name="bill_data.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
-msg = (
-    f"Vendor: {shop_name}\n"
-    f"Date: {bill_date}\n"
-    f"Total: ₹{bill_total}\n"
-    f"Fraud Score: {fraud_score}%"
-)
-
-wa_url = (
-    "https://wa.me/?text="
-    +
-    urllib.parse.quote(msg)
-)
-
-st.link_button(
     "📱 Share WhatsApp",
     wa_url
 )
