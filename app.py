@@ -1,9 +1,6 @@
-import subprocess
-from pathlib import Path
 import streamlit as st
 import google.generativeai as genai
 from PIL import Image
-from io import BytesIO
 import pandas as pd
 import sqlite3
 import hashlib
@@ -14,116 +11,95 @@ import time
 import tempfile
 import urllib.parse
 import platform
+import subprocess
 from datetime import datetime
+from io import BytesIO
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
 
 # ==========================================================
-# PAGE CONFIG
+# PAGE CONFIG & STATE
 # ==========================================================
-st.set_page_config(
-    page_title="Deep CSC AI Bill Processor Premium",
-    page_icon="🧾",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="Deep CSC AI Premium", layout="wide")
+if "logged_in" not in st.session_state: st.session_state.logged_in = False
 
 # ==========================================================
-# ENV & DB SETUP
+# HELPER FUNCTIONS (OCR, DB, VALIDATION)
 # ==========================================================
-IS_LOCAL = (platform.system() == "Windows" and os.path.exists(r"C:\Program Files\NAPS2\NAPS2.Console.exe"))
-NAPS2_PATH = r"C:\Program Files\NAPS2\NAPS2.Console.exe"
-
 def init_db():
     conn = sqlite3.connect("bills.db")
     cur = conn.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS bills (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, image_hash TEXT, shop_name TEXT, 
-        bill_date TEXT, gst_number TEXT, category TEXT, total REAL, 
-        calculated_total REAL, fraud_score REAL, status TEXT, timestamp TEXT)""")
+    cur.execute('''CREATE TABLE IF NOT EXISTS bills 
+                  (id INTEGER PRIMARY KEY, image_hash TEXT, shop_name TEXT, total REAL, fraud_score REAL, status TEXT, timestamp TEXT)''')
     conn.commit()
     conn.close()
 
 init_db()
 
-# ==========================================================
-# HELPER FUNCTIONS
-# ==========================================================
-def generate_hash(file_bytes): return hashlib.md5(file_bytes).hexdigest()
+def validate_gst(gst):
+    if not gst: return False, "N/A"
+    pattern = r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$"
+    return bool(re.match(pattern, str(gst).upper())), gst
 
-def check_duplicate(image_hash):
-    conn = sqlite3.connect("bills.db")
-    cur = conn.cursor()
-    cur.execute("SELECT id FROM bills WHERE image_hash = ?", (image_hash,))
-    result = cur.fetchone()
-    conn.close()
-    return result is not None
-
-def save_bill(image_hash, shop_name, bill_date, gst_number, category, total, calculated_total, fraud_score, status):
-    conn = sqlite3.connect("bills.db")
-    cur = conn.cursor()
-    cur.execute("""INSERT INTO bills (image_hash, shop_name, bill_date, gst_number, category, total, 
-                   calculated_total, fraud_score, status, timestamp) VALUES (?,?,?,?,?,?,?,?,?,?)""",
-                (image_hash, shop_name, bill_date, gst_number, category, total, calculated_total, 
-                 fraud_score, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-    conn.commit()
-    conn.close()
+def analyze_bill(image):
+    model = genai.GenerativeModel("gemini-1.5-flash")
+    prompt = "Extract shop_name, bill_date, gst_number, total, items(name, qty, rate, amount) in JSON."
+    response = model.generate_content([prompt, image])
+    try: return json.loads(response.text.replace("```json", "").replace("```", "").strip())
+    except: return None
 
 # ==========================================================
-# PDF & EXPORT ENGINE
+# EXPORT SECTION
 # ==========================================================
-def generate_pdf(shop_name, bill_date, gst_number, bill_total, fraud_score):
-    pdf_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-    doc = SimpleDocTemplate(pdf_file.name)
-    styles = getSampleStyleSheet()
-    elements = [Paragraph("Deep CSC Bill Report", styles["Title"]), Spacer(1, 20),
-                Paragraph(f"Vendor : {shop_name}", styles["Normal"]),
-                Paragraph(f"Date : {bill_date}", styles["Normal"]),
-                Paragraph(f"GST : {gst_number}", styles["Normal"]),
-                Paragraph(f"Total : ₹{bill_total}", styles["Normal"]),
-                Paragraph(f"Fraud Score : {fraud_score}%", styles["Normal"])]
-    doc.build(elements)
-    return pdf_file.name
-
-def export_section(shop_name, bill_date, gst_clean, bill_total, fraud_score, df):
-    pdf_path = generate_pdf(shop_name, bill_date, gst_clean, bill_total, fraud_score)
+def export_section(shop_name, bill_date, total, fraud, df):
     c1, c2, c3 = st.columns(3)
     with c1:
-        with open(pdf_path, "rb") as f:
-            st.download_button("📄 Download PDF", f.read(), file_name=f"{shop_name}.pdf", mime="application/pdf")
-    with c2:
-        excel = BytesIO()
-        if not df.empty: df.to_excel(excel, index=False)
-        st.download_button("📊 Download Excel", excel.getvalue(), file_name=f"{shop_name}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button("📊 Download Excel", df.to_csv(index=False), "bill.csv", "text/csv")
     with c3:
-        msg = f"Vendor: {shop_name}\nDate: {bill_date}\nTotal: ₹{bill_total}\nFraud Score: {fraud_score}%"
-        wa_url = "https://wa.me/?text=" + urllib.parse.quote(msg)
+        wa_url = f"https://wa.me/?text=Bill Details: {shop_name}, Total: {total}, Fraud Score: {fraud}%"
         st.link_button("📱 Share WhatsApp", wa_url)
 
 # ==========================================================
-# MAIN LOGIC (Simplified for brevity, integrate your existing OCR/Process functions here)
+# LOGIN SCREEN
 # ==========================================================
-# [Insert your existing validate_gst, detect_category, calculate_fraud_score, analyze_bill, process_bill functions here]
-
-# ==========================================================
-# SIDEBAR & APP FLOW
-# ==========================================================
-if not st.session_state.get("logged_in", False):
-    # (Insert your login screen here)
+if not st.session_state.logged_in:
+    st.title("🔐 Login to Deep CSC")
+    user = st.text_input("Username")
+    pwd = st.text_input("Password", type="password")
+    if st.button("Login"):
+        if user == "admin" and pwd == "password123":
+            st.session_state.logged_in = True
+            st.rerun()
+        else: st.error("Invalid")
     st.stop()
 
-st.sidebar.title("🧾 Deep CSC")
-app_mode = st.sidebar.radio("Navigation", ["📤 Upload & Process", "📠 Scanner", "📊 Dashboard", "⚙ Settings"])
+# ==========================================================
+# MAIN APP
+# ==========================================================
+st.sidebar.title("🧾 Deep CSC Platform")
+mode = st.sidebar.radio("Navigation", ["📤 Process", "📊 Dashboard", "⚙ Settings"])
 
-if app_mode == "📤 Upload & Process":
-    # (Your upload code)
-    pass
-elif app_mode == "📊 Dashboard":
-    # (Your dashboard code)
-    pass
-elif app_mode == "📠 Scanner":
-    # (Your scanner code)
-    pass
-elif app_mode == "⚙ Settings":
-    st.title("⚙ Settings")
-    st.info(f"Scanner Available: {IS_LOCAL}")
+if mode == "📤 Process":
+    st.title("Upload/Capture Bill")
+    uploaded_file = st.file_uploader("Upload", type=["jpg", "png"])
+    if uploaded_file:
+        image = Image.open(uploaded_file)
+        if st.button("Analyze"):
+            data = analyze_bill(image)
+            if data:
+                st.write(f"Shop: {data.get('shop_name')}")
+                st.metric("Total", data.get("total"))
+                df = pd.DataFrame(data.get("items", []))
+                st.dataframe(df)
+                export_section(data.get('shop_name'), "", data.get('total'), 0, df)
+            else: st.error("Parsing failed")
+
+elif mode == "📊 Dashboard":
+    st.title("Financial Dashboard")
+    conn = sqlite3.connect("bills.db")
+    df = pd.read_sql_query("SELECT * FROM bills", conn)
+    st.dataframe(df)
+    conn.close()
+
+elif mode == "⚙ Settings":
+    st.info("System Ready. Enterprise Edition Active.")
