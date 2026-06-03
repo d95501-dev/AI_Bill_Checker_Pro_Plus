@@ -1,8 +1,3 @@
-# ==========================================================
-# DEEP CSC AI BILL PROCESSOR PREMIUM ENTERPRISE
-# PART 1 - FOUNDATION LAYER
-# ==========================================================
-
 import subprocess
 from pathlib import Path
 import streamlit as st
