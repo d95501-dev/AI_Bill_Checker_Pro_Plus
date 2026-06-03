@@ -49,7 +49,10 @@ st.set_page_config(
 # ENVIRONMENT DETECTION
 # ==========================================================
 
-IS_LOCAL = False 
+IS_LOCAL = (
+    platform.system() == "Windows"
+    and os.path.exists(r"C:\Program Files\NAPS2\NAPS2.Console.exe")
+)
 NAPS2_PATH = r"C:\Program Files\NAPS2\NAPS2.Console.exe"
 
 def scan_document(dpi=300):
