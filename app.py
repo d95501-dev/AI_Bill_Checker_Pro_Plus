@@ -2,10 +2,8 @@ import subprocess
 from pathlib import Path
 import streamlit as st
 import google.generativeai as genai
-
 from PIL import Image
 from io import BytesIO
-
 import pandas as pd
 import sqlite3
 import hashlib
@@ -16,19 +14,15 @@ import time
 import tempfile
 import urllib.parse
 import platform
-
 from datetime import datetime
-
 from reportlab.platypus import (
     SimpleDocTemplate,
     Paragraph,
     Spacer
 )
-
 from reportlab.lib.styles import (
     getSampleStyleSheet
 )
-
 # ==========================================================
 # PAGE CONFIG
 # ==========================================================
