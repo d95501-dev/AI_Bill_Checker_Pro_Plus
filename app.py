@@ -3,6 +3,8 @@
 # PART 1 - FOUNDATION LAYER
 # ==========================================================
 
+import subprocess
+from pathlib import Path
 import streamlit as st
 import google.generativeai as genai
 
@@ -47,7 +49,42 @@ st.set_page_config(
 # ENVIRONMENT DETECTION
 # ==========================================================
 
-IS_LOCAL = (
+IS_LOCAL = 
+NAPS2_PATH = r"C:\Program Files\NAPS2\NAPS2.Console.exe"
+
+def scan_document(dpi=300):
+
+    output_file = "scan.jpg"
+
+    if not os.path.exists(NAPS2_PATH):
+        return None
+
+    cmd = [
+        NAPS2_PATH,
+        "--driver", "wia",
+        "--device", "Brother DCP-T820DW",
+        "--source", "glass",
+        "--dpi", str(dpi),
+        "-o", output_file,
+        "-f"
+    ]
+
+    try:
+
+        subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True
+        )
+
+        if os.path.exists(output_file):
+            return output_file
+
+    except Exception:
+        pass
+
+    return None
+(
     platform.system() == "Windows"
     and os.path.exists(
         r"C:\Program Files\NAPS2\NAPS2.Console.exe"
@@ -266,7 +303,12 @@ if not st.session_state.logged_in:
 # ==========================================================
 # SIDEBAR
 # ==========================================================
-
+[
+    "📤 Upload & Process",
+    "📠 Scanner",
+    "📊 Dashboard",
+    "⚙ Settings"
+]
 st.sidebar.title(
     "🧾 Deep CSC"
 )
@@ -320,6 +362,7 @@ model = genai.GenerativeModel(
 # PART 1 COMPLETE
 # ==========================================================
 # ==========================================================
+# PART 2
 # OCR ENGINE + VALIDATION + FRAUD DETECTION
 # ==========================================================
 
@@ -739,6 +782,7 @@ def process_bill(image, file_bytes):
         status
     )
 # ==========================================================
+# PART 3
 # UPLOAD UI + CAMERA + DASHBOARD
 # ==========================================================
 
@@ -959,7 +1003,40 @@ elif app_mode == "📊 Dashboard":
 # ==========================================================
 # SETTINGS
 # ==========================================================
+elif app_mode == "📠 Scanner":
 
+    st.title("📠 Brother Scanner")
+
+    dpi = st.selectbox(
+        "DPI",
+        [150, 300, 600],
+        index=1
+    )
+
+    if st.button("🚀 Scan Bill"):
+
+        with st.spinner("Scanning..."):
+
+            file = scan_document(dpi)
+
+            if file:
+
+                image = Image.open(file)
+
+                st.image(image)
+
+                with open(file, "rb") as f:
+
+                    process_bill(
+                        image,
+                        f.read()
+                    )
+
+            else:
+
+                st.error(
+                    "Scanner not detected"
+                )
 elif app_mode == "⚙ Settings":
 
     st.title("⚙ Settings")
