@@ -13,7 +13,7 @@ from datetime import datetime
 import numpy as np
 from pdf2image import convert_from_bytes
 import base64
-import os
+from pathlib import Path
 
 try:
     import pytesseract
@@ -139,13 +139,15 @@ def init_auth():
         st.session_state.logged_in = False
 
 def init_runtime_state():
-    for k, v in {
+    defaults = {
         "gemini_available": True,
         "last_gemini_error_time": None,
         "gemini_cooldown_seconds": 900,
         "gemini_retry_count": 0,
         "selected_provider": "Gemini",
-    }.items():
+        "batch_results": {},
+    }
+    for k, v in defaults.items():
         if k not in st.session_state:
             st.session_state[k] = v
 
@@ -230,13 +232,11 @@ def can_try_gemini():
 def preprocess_for_ocr(image):
     if not isinstance(image, Image.Image):
         image = Image.open(image)
-    image = image.convert("RGB")
-    gray = ImageOps.grayscale(image)
-    gray = ImageOps.autocontrast(gray)
-    gray = gray.resize((gray.width * 2, gray.height * 2))
-    arr = np.array(gray, dtype=np.float32)
-    arr = (arr - arr.min()) / (arr.max() - arr.min() + 1e-6) * 255.0
-    arr = np.clip(arr, 0, 255).astype("uint8")
+    image = image.convert("L")
+    image = ImageOps.autocontrast(image)
+    image = image.resize((image.width * 3, image.height * 3))
+    arr = np.array(image)
+    arr = np.where(arr > 180, 255, 0).astype("uint8")
     img = Image.fromarray(arr)
     img = img.filter(ImageFilter.SHARPEN)
     img = img.filter(ImageFilter.MedianFilter(size=3))
@@ -246,21 +246,16 @@ def extract_page_text_from_image(image):
     if pytesseract is None:
         return ""
     processed = preprocess_for_ocr(image)
-    configs = ["--psm 6", "--psm 11", "--psm 4"]
+    configs = ["--psm 6", "--psm 11", "--psm 4", "--psm 3"]
     texts = []
     for cfg in configs:
         try:
             txt = pytesseract.image_to_string(processed, config=cfg)
             if txt and txt.strip():
-                texts.append(txt)
+                texts.append(txt.strip())
         except Exception:
             pass
     return max(texts, key=len, default="")
-
-def local_ocr_from_image(image):
-    if pytesseract is None:
-        raise RuntimeError("pytesseract not available")
-    return extract_page_text_from_image(image)
 
 def run_paddleocr(image_or_pdf_bytes, source_type="image"):
     if PaddleOCR is None:
@@ -369,11 +364,10 @@ def analyze_openai(client, image_bytes):
     if client is None:
         raise RuntimeError("OpenAI not configured")
     b64 = base64.b64encode(image_bytes).decode("utf-8")
-    prompt = build_schema_prompt()
     resp = client.chat.completions.create(
         model=st.secrets.get("OPENAI_MODEL", "gpt-4o-mini"),
         messages=[
-            {"role": "system", "content": prompt},
+            {"role": "system", "content": build_schema_prompt()},
             {"role": "user", "content": [
                 {"type": "text", "text": "Extract invoice JSON from this image."},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
@@ -381,8 +375,7 @@ def analyze_openai(client, image_bytes):
         ],
         response_format={"type": "json_object"}
     )
-    txt = resp.choices[0].message.content
-    return parse_json_from_response(txt)
+    return parse_json_from_response(resp.choices[0].message.content)
 
 def analyze_perplexity(api_key, image_bytes):
     if api_key is None or requests is None:
@@ -433,8 +426,7 @@ def analyze_perplexity(api_key, image_bytes):
     r = requests.post(url, headers=headers, json=payload, timeout=120)
     r.raise_for_status()
     data = r.json()
-    content = data["choices"][0]["message"]["content"]
-    return parse_json_from_response(content)
+    return parse_json_from_response(data["choices"][0]["message"]["content"])
 
 def score_ocr_text(text):
     score = 0
@@ -475,23 +467,33 @@ def merge_ocr_results(ocr_runs):
 
 def analyze_with_local_chain(image_or_pdf, source_type="image"):
     ocr_runs = []
+    debug_info = {}
+
     try:
         if source_type == "pdf":
             pages = convert_from_bytes(image_or_pdf, dpi=300)
-            page_texts = [extract_page_text_from_image(page) for page in pages]
-            ocr_runs.append(("Tesseract", "\n".join(page_texts)))
+            texts = [extract_page_text_from_image(page) for page in pages]
+            joined = "\n".join(texts)
+            ocr_runs.append(("Tesseract", joined))
+            debug_info["tesseract_len"] = len(joined or "")
         else:
-            ocr_runs.append(("Tesseract", extract_page_text_from_image(image_or_pdf)))
+            txt = extract_page_text_from_image(image_or_pdf)
+            ocr_runs.append(("Tesseract", txt))
+            debug_info["tesseract_len"] = len(txt or "")
     except Exception as ex:
         ocr_runs.append(("Tesseract", f"ERROR: {ex}"))
 
     try:
-        ocr_runs.append(("PaddleOCR", run_paddleocr(image_or_pdf, source_type)))
+        ptxt = run_paddleocr(image_or_pdf, source_type)
+        ocr_runs.append(("PaddleOCR", ptxt))
+        debug_info["paddle_len"] = len(ptxt or "")
     except Exception as ex:
         ocr_runs.append(("PaddleOCR", f"ERROR: {ex}"))
 
     try:
-        ocr_runs.append(("EasyOCR", run_easyocr(image_or_pdf, source_type)))
+        etxt = run_easyocr(image_or_pdf, source_type)
+        ocr_runs.append(("EasyOCR", etxt))
+        debug_info["easy_len"] = len(etxt or "")
     except Exception as ex:
         ocr_runs.append(("EasyOCR", f"ERROR: {ex}"))
 
@@ -502,27 +504,23 @@ def analyze_with_local_chain(image_or_pdf, source_type="image"):
             best_raw = txt
     result["_raw_text"] = best_raw
     result["_ocr_runs"] = {k: v for k, v in ocr_runs}
+    result["_debug_info"] = debug_info
     return result
 
 def image_to_bytes(image):
     if isinstance(image, Image.Image):
         buf = BytesIO()
-        image.save(buf, format="JPEG")
+        image.save(buf, format="JPEG", quality=95)
         return buf.getvalue()
+    if hasattr(image, "getvalue"):
+        return image.getvalue()
     if hasattr(image, "read"):
+        try:
+            image.seek(0)
+        except Exception:
+            pass
         return image.read()
     return bytes(image)
-
-def analyze_with_provider(provider, model_bundle, image_or_pdf, source_type="image"):
-    if provider == "Gemini":
-        return analyze_gemini(model_bundle["gemini"], image_or_pdf)
-    if provider == "OpenAI":
-        img = image_or_pdf if source_type == "image" else convert_from_bytes(image_or_pdf, dpi=300)[0]
-        return analyze_openai(model_bundle["openai"], image_to_bytes(img))
-    if provider == "Perplexity":
-        img = image_or_pdf if source_type == "image" else convert_from_bytes(image_or_pdf, dpi=300)[0]
-        return analyze_perplexity(model_bundle["perplexity"], image_to_bytes(img))
-    return analyze_with_local_chain(image_or_pdf, source_type)
 
 def analyze_with_auto_fallback(model_bundle, image_or_pdf, source_type="image"):
     provider = st.session_state.get("selected_provider", "Gemini")
@@ -536,21 +534,23 @@ def analyze_with_auto_fallback(model_bundle, image_or_pdf, source_type="image"):
         try:
             if p == "Local OCR":
                 return analyze_with_local_chain(image_or_pdf, source_type)
+
             if p == "Gemini":
-                if not model_bundle.get("gemini"):
-                    continue
-                if can_try_gemini():
+                if model_bundle.get("gemini") and can_try_gemini():
                     result = analyze_gemini(model_bundle["gemini"], image_or_pdf)
                     st.session_state.gemini_available = True
                     st.session_state.last_gemini_error_time = None
                     st.session_state.gemini_retry_count = 0
                     return result
+
             elif p == "OpenAI" and model_bundle.get("openai"):
                 img = image_or_pdf if source_type == "image" else convert_from_bytes(image_or_pdf, dpi=300)[0]
                 return analyze_openai(model_bundle["openai"], image_to_bytes(img))
+
             elif p == "Perplexity" and model_bundle.get("perplexity"):
                 img = image_or_pdf if source_type == "image" else convert_from_bytes(image_or_pdf, dpi=300)[0]
                 return analyze_perplexity(model_bundle["perplexity"], image_to_bytes(img))
+
         except Exception as e:
             last_err = e
             msg = str(e).lower()
@@ -560,6 +560,7 @@ def analyze_with_auto_fallback(model_bundle, image_or_pdf, source_type="image"):
                 st.session_state.gemini_retry_count += 1
                 st.warning("Gemini quota exhausted. Switching to next provider.")
             continue
+
     raise RuntimeError(f"All providers failed: {last_err}")
 
 def render_bill_result(data, source_name, save_to_db=False):
@@ -568,6 +569,8 @@ def render_bill_result(data, source_name, save_to_db=False):
         return
 
     with st.expander("🧪 OCR Debug Output", expanded=False):
+        st.write("Debug info:")
+        st.json(data.get("_debug_info", {}))
         st.write("Raw OCR text:")
         st.code(data.get("_raw_text", ""), language="text")
         st.write("OCR engine outputs:")
@@ -576,10 +579,12 @@ def render_bill_result(data, source_name, save_to_db=False):
     shop_name = str(data.get("shop_name") or "Unknown Shop").strip()
     bill_date = str(data.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
     gst_number = data.get("gst_number") or "N/A"
+
     st.markdown(f"### 🏪 Vendor: `{shop_name}`")
     c1, c2 = st.columns(2)
     c1.markdown(f"**🗓️ Declared Invoice Date:** {bill_date}")
     is_valid_gst, formatted_gst = validate_gst(gst_number)
+
     if gst_number != "N/A" and is_valid_gst:
         c2.markdown(f"**🛡️ GSTIN Registry Validation:** :green[✅ Valid - {formatted_gst}]")
     elif gst_number != "N/A":
@@ -688,15 +693,13 @@ def render_upload_module(model_bundle):
         st.session_state.gemini_retry_count = 0
         st.success("Gemini retry enabled. Next request will try Gemini first.")
 
-    provider = st.selectbox("Choose provider", ["Gemini", "OpenAI", "Perplexity", "Local OCR"], index=["Gemini", "OpenAI", "Perplexity", "Local OCR"].index(st.session_state.selected_provider), key="provider_select")
+    providers = ["Gemini", "OpenAI", "Perplexity", "Local OCR"]
+    provider = st.selectbox("Choose provider", providers, index=providers.index(st.session_state.selected_provider), key="provider_select")
     st.session_state.selected_provider = provider
 
     uploaded_files = st.file_uploader("Drop batch bill images or PDF files below (Multi-upload supported)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
     if not uploaded_files:
         return
-
-    if "batch_results" not in st.session_state:
-        st.session_state.batch_results = {}
 
     for idx, file in enumerate(uploaded_files):
         st.markdown("---")
@@ -704,7 +707,7 @@ def render_upload_module(model_bundle):
         is_pdf = file.name.lower().endswith(".pdf")
 
         if is_pdf:
-            pdf_bytes = file.read()
+            pdf_bytes = file.getvalue()
             try:
                 pages = convert_from_bytes(pdf_bytes, dpi=300)
             except Exception as e:
@@ -745,7 +748,8 @@ def render_upload_module(model_bundle):
         else:
             col_img, col_act = st.columns([1, 2], gap="large")
             with col_img:
-                image = Image.open(file)
+                uploaded_bytes = file.getvalue()
+                image = Image.open(BytesIO(uploaded_bytes)).convert("RGB")
                 st.image(image, caption=f"Source: {file.name}", use_container_width=True)
             with col_act:
                 if st.button("⚡ Execute AI Analysis", key=f"btn_{idx}", use_container_width=True):
