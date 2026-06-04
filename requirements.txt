@@ -1,10 +1,11 @@
-numpy
+streamlit
+google-generativeai
 pandas
 pillow
-pytesseract
+numpy
 pdf2image
 reportlab
 openpyxl
-google-generativeai
+pytesseract
 paddleocr
 easyocr
