@@ -244,6 +244,27 @@ def analyze_bill(model, file_payload):
     raise last_error
 
 def safe_float(value):
+    def process_pdf_pages(model, pdf_bytes, source_name):
+    results = []
+    pages = convert_from_bytes(pdf_bytes, dpi=200)
+
+    for p_idx, page_img in enumerate(pages, start=1):
+        try:
+            data = analyze_bill(model, page_img)
+            results.append({
+                "page": p_idx,
+                "source": source_name,
+                "data": data,
+                "error": None
+            })
+        except Exception as e:
+            results.append({
+                "page": p_idx,
+                "source": source_name,
+                "data": None,
+                "error": str(e)
+            })
+    return results
     try:
         return float(str(value).replace(",", "").strip())
     except Exception:
@@ -384,6 +405,9 @@ def render_upload_module(model):
     if not uploaded_files:
         return
 
+    if "batch_results" not in st.session_state:
+        st.session_state.batch_results = {}
+
     for idx, file in enumerate(uploaded_files):
         st.markdown("---")
         st.subheader(f"📄 Processing Block [{idx + 1}]: {file.name}")
@@ -400,6 +424,13 @@ def render_upload_module(model):
 
             st.info(f"📁 PDF Document Detected — {len(pages)} page(s) found")
 
+            if st.button("⚡ Process All Pages", key=f"process_all_{idx}", use_container_width=True):
+                with st.spinner("Processing all PDF pages..."):
+                    st.session_state.batch_results[file.name] = process_pdf_pages(model, pdf_bytes, file.name)
+                st.success("All pages processed successfully!")
+
+            results = st.session_state.batch_results.get(file.name, [])
+
             for p_idx, page_img in enumerate(pages, start=1):
                 st.markdown(f"### 📄 Page {p_idx}")
                 col_img, col_act = st.columns([1, 2], gap="large")
@@ -408,17 +439,17 @@ def render_upload_module(model):
                     st.image(page_img, caption=f"{file.name} - Page {p_idx}", use_container_width=True)
 
                 with col_act:
-                    if st.button(
-                        f"⚡ Execute AI Analysis (Page {p_idx})",
-                        key=f"btn_{idx}_page_{p_idx}",
-                        use_container_width=True
-                    ):
-                        with st.spinner("AI engine parsing structural metadata..."):
-                            try:
-                                data = analyze_bill(model, page_img)
-                                render_bill_result(data, f"{file.name} (Page {p_idx})")
-                            except Exception as e:
-                                st.error(f"Structural Parsing Fault: {e}")
+                    st.caption("This page will be included in batch processing.")
+
+            if results:
+                st.markdown("## ✅ Batch Results")
+                for item in results:
+                    if item["error"]:
+                        st.error(f"Page {item['page']}: {item['error']}")
+                    else:
+                        st.markdown(f"### Page {item['page']} Result")
+                        render_bill_result(item["data"], f"{item['source']} (Page {item['page']})")
+
         else:
             col_img, col_act = st.columns([1, 2], gap="large")
 
