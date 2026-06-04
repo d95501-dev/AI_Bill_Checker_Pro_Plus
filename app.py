@@ -5,17 +5,12 @@ import pandas as pd
 from io import BytesIO
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
 from reportlab.lib.styles import getSampleStyleSheet
-import urllib.parse
 import tempfile
 import json
 import re
 import sqlite3
 from datetime import datetime
-import time
-import os
-import subprocess
 import numpy as np
-import cv2
 import pytesseract
 from pdf2image import convert_from_bytes
 
@@ -33,7 +28,6 @@ APP_TITLE = "Deep CSC - AI Bill Processor Premium"
 DB_PATH = "bills.db"
 DEFAULT_USERNAME = st.secrets.get("APP_USERNAME", "admin")
 DEFAULT_PASSWORD = st.secrets.get("APP_PASSWORD", "password123")
-NAPS2_PATH = r"C:\Program Files\NAPS2\NAPS2.exe"
 
 def setup_page():
     st.set_page_config(page_title=APP_TITLE, page_icon="🧾", layout="wide", initial_sidebar_state="expanded")
@@ -42,7 +36,7 @@ def apply_css():
     st.markdown("""
         <style>
             .main { background-color: #f8fafc; }
-            h1, h2, h3, h4 { font-family: 'Plus Jakarta Sans', system-ui, sans-serif !important; color: #0f172a !important; font-weight: 800 !important; }
+            h1, h2, h3, h4 { font-family: system-ui, sans-serif !important; color: #0f172a !important; font-weight: 800 !important; }
             .deep-csc-header {
                 background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #311042 100%);
                 padding: 30px; border-radius: 24px; margin-bottom: 35px;
@@ -84,7 +78,6 @@ def apply_css():
                 font-size: 28px !important;
                 font-weight: 900 !important;
                 margin: 0 0 6px 0 !important;
-                letter-spacing: 0.5px !important;
             }
             .sidebar-subtitle {
                 color: #ff477e !important;
@@ -240,7 +233,7 @@ def preprocess_for_ocr(image):
     gray = ImageOps.grayscale(image)
     gray = gray.filter(ImageFilter.MedianFilter())
     arr = np.array(gray)
-    arr = cv2.threshold(arr, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
+    arr = np.where(arr > 180, 255, 0).astype("uint8")
     return Image.fromarray(arr)
 
 def local_ocr_from_image(image):
@@ -333,11 +326,16 @@ No markdown, no explanation, no extra text.
 def score_ocr_text(text):
     score = 0
     t = text.lower()
-    if "total" in t: score += 3
-    if "date" in t: score += 2
-    if "gst" in t: score += 2
-    if re.search(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", t): score += 2
-    if len(text.strip()) > 100: score += 1
+    if "total" in t:
+        score += 3
+    if "date" in t:
+        score += 2
+    if "gst" in t:
+        score += 2
+    if re.search(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", t):
+        score += 2
+    if len(text.strip()) > 100:
+        score += 1
     return score
 
 def merge_ocr_results(ocr_runs):
@@ -496,6 +494,7 @@ def render_upload_module(model):
     uploaded_files = st.file_uploader("Drop batch bill images or PDF files below (Multi-upload supported)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
     if not uploaded_files:
         return
+
     if "batch_results" not in st.session_state:
         st.session_state.batch_results = {}
 
@@ -579,7 +578,7 @@ def main():
 
         st.markdown(f"<p style='color:#cbd5e1; font-size:14px; margin-left:5px;'>Operator: <b style='color:#38bdf8;'>{DEFAULT_USERNAME} (Deepak)</b></p>", unsafe_allow_html=True)
         st.markdown(f"<p style='color:#cbd5e1; font-size:13px; margin-left:5px;'>Gemini state: <b>{'Available' if st.session_state.gemini_available else 'Fallback mode'}</b></p>", unsafe_allow_html=True)
-        app_mode = st.selectbox("Navigate System", ["📤 Upload & Process"], key="app_mode")
+        st.selectbox("Navigate System", ["📤 Upload & Process"], key="app_mode")
         st.markdown("<br><br><hr style='border-color: #1e293b;'>", unsafe_allow_html=True)
         if st.button("🚪 Terminate Session", use_container_width=True, key="terminate_session"):
             terminate_session()
