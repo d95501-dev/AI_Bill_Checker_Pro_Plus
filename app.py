@@ -274,6 +274,61 @@ def process_pdf_pages(model, pdf_bytes, source_name):
             })
     return results
 
+def build_batch_summary(results):
+    rows = []
+    for item in results:
+        if item.get("data"):
+            data = item["data"]
+            shop_name = str(data.get("shop_name") or "Unknown Shop").strip()
+            bill_date = str(data.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
+            gst_number = data.get("gst_number") or "N/A"
+            items = normalize_items(data.get("items"))
+            if items:
+                tmp_df = pd.DataFrame(items)
+                tmp_df["amount"] = pd.to_numeric(tmp_df["amount"], errors="coerce").fillna(0)
+                calculated_total = float(tmp_df["amount"].sum())
+            else:
+                calculated_total = 0.0
+            bill_total = safe_float(data.get("total", 0))
+            diff = abs(calculated_total - bill_total)
+            status_txt = "Matched" if diff < 1 else "Mismatch"
+            rows.append({
+                "page": item.get("page"),
+                "source": item.get("source"),
+                "shop_name": shop_name,
+                "bill_date": bill_date,
+                "gst_number": gst_number,
+                "bill_total": bill_total,
+                "calculated_total": calculated_total,
+                "difference": diff,
+                "status": status_txt
+            })
+        else:
+            rows.append({
+                "page": item.get("page"),
+                "source": item.get("source"),
+                "shop_name": None,
+                "bill_date": None,
+                "gst_number": None,
+                "bill_total": None,
+                "calculated_total": None,
+                "difference": None,
+                "status": f"Error: {item.get('error')}"
+            })
+    return pd.DataFrame(rows)
+
+def make_excel_download(df, filename, label="📥 Download Excel"):
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Batch Summary")
+    st.download_button(
+        label,
+        data=buffer.getvalue(),
+        file_name=filename,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
 def render_bill_result(data, source_name, save_to_db=False):
     if not isinstance(data, dict):
         st.error("AI से डेटा प्राप्त नहीं हो सका।")
@@ -334,6 +389,13 @@ def render_bill_result(data, source_name, save_to_db=False):
     excel_buffer = BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Parsed Invoice Data")
+    st.download_button(
+        "📥 Export Excel Data Sheets",
+        data=excel_buffer.getvalue(),
+        file_name=f"{re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)}_ledger.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
 
     pdf_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     doc = SimpleDocTemplate(pdf_temp.name)
@@ -346,22 +408,13 @@ def render_bill_result(data, source_name, save_to_db=False):
     ]
     doc.build(elements)
 
-    ut1, ut2, ut3 = st.columns(3)
-    safe_shop = re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)
-    with ut1:
-        st.download_button(
-            "📥 Export Excel Data Sheets",
-            data=excel_buffer.getvalue(),
-            file_name=f"{safe_shop}_ledger.xlsx",
-            mime="application/vnd.ms-excel",
-            use_container_width=True
-        )
+    ut2, ut3 = st.columns(2)
     with ut2:
         with open(pdf_temp.name, "rb") as f:
             st.download_button(
                 "📄 Download Sign-off PDF",
                 f.read(),
-                file_name=f"{safe_shop}_receipt.pdf",
+                file_name=f"{re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)}_receipt.pdf",
                 mime="application/pdf",
                 use_container_width=True
             )
@@ -416,7 +469,6 @@ def render_upload_module(model):
     for idx, file in enumerate(uploaded_files):
         st.markdown("---")
         st.subheader(f"📄 Processing Block [{idx + 1}]: {file.name}")
-
         is_pdf = file.name.lower().endswith(".pdf")
 
         if is_pdf:
@@ -443,7 +495,10 @@ def render_upload_module(model):
                     st.image(page_img, caption=f"{file.name} - Page {p_idx}", use_container_width=True)
 
             if results:
-                st.markdown("## ✅ Batch Results")
+                st.markdown("## 📋 Page-wise Consolidated Summary")
+                summary_df = build_batch_summary(results)
+                st.dataframe(summary_df, use_container_width=True, hide_index=True)
+                make_excel_download(summary_df, f"{file.name}_page_wise_summary.xlsx", "📥 Download Batch Excel")
 
                 if st.button("💾 Save All Results to Database", key=f"save_all_{idx}", use_container_width=True):
                     saved_count = 0
@@ -467,6 +522,7 @@ def render_upload_module(model):
                                 saved_count += 1
                     st.success(f"{saved_count} result(s) saved to database.")
 
+                st.markdown("## ✅ Batch Results")
                 for item in results:
                     if item["error"]:
                         st.error(f"Page {item['page']}: {item['error']}")
@@ -476,7 +532,6 @@ def render_upload_module(model):
 
         else:
             col_img, col_act = st.columns([1, 2], gap="large")
-
             with col_img:
                 image = Image.open(file)
                 st.image(image, caption=f"Source: {file.name}", use_container_width=True)
@@ -598,7 +653,7 @@ def render_dashboard():
             "📥 Master Export DB Logs",
             data=master_excel_buffer.getvalue(),
             file_name="Corporate_Master_Ledger.xlsx",
-            mime="application/vnd.ms-excel",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True
         )
 
