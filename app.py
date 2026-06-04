@@ -12,6 +12,8 @@ import sqlite3
 from datetime import datetime
 import numpy as np
 from pdf2image import convert_from_bytes
+import base64
+import os
 
 try:
     import pytesseract
@@ -27,6 +29,16 @@ try:
     import easyocr
 except Exception:
     easyocr = None
+
+try:
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
+
+try:
+    import requests
+except Exception:
+    requests = None
 
 APP_TITLE = "Deep CSC - AI Bill Processor Premium"
 DB_PATH = "bills.db"
@@ -127,14 +139,15 @@ def init_auth():
         st.session_state.logged_in = False
 
 def init_runtime_state():
-    if "gemini_available" not in st.session_state:
-        st.session_state.gemini_available = True
-    if "last_gemini_error_time" not in st.session_state:
-        st.session_state.last_gemini_error_time = None
-    if "gemini_cooldown_seconds" not in st.session_state:
-        st.session_state.gemini_cooldown_seconds = 900
-    if "gemini_retry_count" not in st.session_state:
-        st.session_state.gemini_retry_count = 0
+    for k, v in {
+        "gemini_available": True,
+        "last_gemini_error_time": None,
+        "gemini_cooldown_seconds": 900,
+        "gemini_retry_count": 0,
+        "selected_provider": "Gemini",
+    }.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
 
 def do_login():
     st.title("🔐 System Login Proxy")
@@ -158,10 +171,21 @@ def terminate_session():
 def setup_gemini():
     api_key = st.secrets.get("GEMINI_API_KEY", "")
     if not api_key:
-        st.error("Please configure GEMINI_API_KEY in your Streamlit secrets.")
-        st.stop()
+        return None
     genai.configure(api_key=api_key)
     return genai.GenerativeModel("gemini-2.5-flash")
+
+def setup_openai():
+    api_key = st.secrets.get("OPENAI_API_KEY", "")
+    if not api_key or OpenAI is None:
+        return None
+    return OpenAI(api_key=api_key)
+
+def setup_perplexity():
+    api_key = st.secrets.get("PERPLEXITY_API_KEY", "")
+    if not api_key or requests is None:
+        return None
+    return api_key
 
 def validate_gst(gst_str):
     if not gst_str:
@@ -238,13 +262,6 @@ def local_ocr_from_image(image):
         raise RuntimeError("pytesseract not available")
     return extract_page_text_from_image(image)
 
-def local_ocr_from_pdf(pdf_bytes):
-    pages = convert_from_bytes(pdf_bytes, dpi=300)
-    texts = []
-    for page in pages:
-        texts.append(local_ocr_from_image(page))
-    return "\n".join(texts)
-
 def run_paddleocr(image_or_pdf_bytes, source_type="image"):
     if PaddleOCR is None:
         raise RuntimeError("PaddleOCR not installed")
@@ -279,13 +296,6 @@ def run_easyocr(image_or_pdf_bytes, source_type="image"):
         texts.extend(result)
     return "\n".join(texts)
 
-def run_tesseract(image_or_pdf_bytes, source_type="image"):
-    if pytesseract is None:
-        raise RuntimeError("pytesseract not installed")
-    if source_type == "pdf":
-        return local_ocr_from_pdf(image_or_pdf_bytes)
-    return local_ocr_from_image(image_or_pdf_bytes)
-
 def parse_bill_text_locally(text):
     text = text or ""
     if not text.strip():
@@ -303,11 +313,7 @@ def parse_bill_text_locally(text):
         shop_name = lines[0][:60]
 
     bill_date = None
-    for pat in [
-        r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
-        r'(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4})',
-        r'(\d{4}[/-]\d{1,2}[/-]\d{1,2})'
-    ]:
+    for pat in [r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})', r'(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4})', r'(\d{4}[/-]\d{1,2}[/-]\d{1,2})']:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
             bill_date = m.group(1)
@@ -319,10 +325,7 @@ def parse_bill_text_locally(text):
         gst_number = gst_match.group(0)
 
     total = None
-    for pat in [
-        r'(?:grand\s*total|net\s*amount|total\s*amount|amount\s*due|invoice\s*total|final\s*total|total)\s*[:\-]?\s*₹?\s*([0-9,]+(?:\.[0-9]{1,2})?)',
-        r'₹\s*([0-9,]+(?:\.[0-9]{1,2})?)'
-    ]:
+    for pat in [r'(?:grand\s*total|net\s*amount|total\s*amount|amount\s*due|invoice\s*total|final\s*total|total)\s*[:\-]?\s*₹?\s*([0-9,]+(?:\.[0-9]{1,2})?)', r'₹\s*([0-9,]+(?:\.[0-9]{1,2})?)']:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
             total = m.group(1)
@@ -335,17 +338,10 @@ def parse_bill_text_locally(text):
         if re.search(r'\d', ln) and len(ln) > 8:
             items.append({"name": ln[:80], "qty": "", "rate": "", "amount": ""})
 
-    return {
-        "shop_name": shop_name,
-        "bill_date": bill_date,
-        "gst_number": gst_number,
-        "items": items[:25],
-        "total": total,
-        "_raw_text": text
-    }
+    return {"shop_name": shop_name, "bill_date": bill_date, "gst_number": gst_number, "items": items[:25], "total": total, "_raw_text": text}
 
-def analyze_gemini(model, file_payload):
-    prompt = """
+def build_schema_prompt():
+    return """
 You are a document extraction specialist.
 Extract invoice details and return ONLY valid JSON:
 {
@@ -364,8 +360,81 @@ Rules:
 - Do not add explanations.
 - Do not wrap in markdown.
 """
-    response = model.generate_content([prompt, file_payload])
+
+def analyze_gemini(model, file_payload):
+    response = model.generate_content([build_schema_prompt(), file_payload])
     return parse_json_from_response(getattr(response, "text", ""))
+
+def analyze_openai(client, image_bytes):
+    if client is None:
+        raise RuntimeError("OpenAI not configured")
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    prompt = build_schema_prompt()
+    resp = client.chat.completions.create(
+        model=st.secrets.get("OPENAI_MODEL", "gpt-4o-mini"),
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": [
+                {"type": "text", "text": "Extract invoice JSON from this image."},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+            ]}
+        ],
+        response_format={"type": "json_object"}
+    )
+    txt = resp.choices[0].message.content
+    return parse_json_from_response(txt)
+
+def analyze_perplexity(api_key, image_bytes):
+    if api_key is None or requests is None:
+        raise RuntimeError("Perplexity not configured")
+    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    url = "https://api.perplexity.ai/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    payload = {
+        "model": st.secrets.get("PERPLEXITY_MODEL", "sonar-pro"),
+        "messages": [
+            {"role": "system", "content": build_schema_prompt()},
+            {"role": "user", "content": [
+                {"type": "text", "text": "Extract invoice JSON from this image."},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
+            ]}
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "invoice_schema",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "shop_name": {"type": ["string", "null"]},
+                        "bill_date": {"type": ["string", "null"]},
+                        "gst_number": {"type": ["string", "null"]},
+                        "items": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "name": {"type": "string"},
+                                    "qty": {"type": "string"},
+                                    "rate": {"type": "string"},
+                                    "amount": {"type": "string"}
+                                },
+                                "required": ["name", "qty", "rate", "amount"]
+                            }
+                        },
+                        "total": {"type": ["string", "null"]}
+                    },
+                    "required": ["shop_name", "bill_date", "gst_number", "items", "total"]
+                }
+            }
+        },
+        "temperature": 0.0
+    }
+    r = requests.post(url, headers=headers, json=payload, timeout=120)
+    r.raise_for_status()
+    data = r.json()
+    content = data["choices"][0]["message"]["content"]
+    return parse_json_from_response(content)
 
 def score_ocr_text(text):
     score = 0
@@ -435,24 +504,63 @@ def analyze_with_local_chain(image_or_pdf, source_type="image"):
     result["_ocr_runs"] = {k: v for k, v in ocr_runs}
     return result
 
-def analyze_with_auto_fallback(model, image_or_pdf, source_type="image"):
-    if can_try_gemini():
+def image_to_bytes(image):
+    if isinstance(image, Image.Image):
+        buf = BytesIO()
+        image.save(buf, format="JPEG")
+        return buf.getvalue()
+    if hasattr(image, "read"):
+        return image.read()
+    return bytes(image)
+
+def analyze_with_provider(provider, model_bundle, image_or_pdf, source_type="image"):
+    if provider == "Gemini":
+        return analyze_gemini(model_bundle["gemini"], image_or_pdf)
+    if provider == "OpenAI":
+        img = image_or_pdf if source_type == "image" else convert_from_bytes(image_or_pdf, dpi=300)[0]
+        return analyze_openai(model_bundle["openai"], image_to_bytes(img))
+    if provider == "Perplexity":
+        img = image_or_pdf if source_type == "image" else convert_from_bytes(image_or_pdf, dpi=300)[0]
+        return analyze_perplexity(model_bundle["perplexity"], image_to_bytes(img))
+    return analyze_with_local_chain(image_or_pdf, source_type)
+
+def analyze_with_auto_fallback(model_bundle, image_or_pdf, source_type="image"):
+    provider = st.session_state.get("selected_provider", "Gemini")
+    try_order = [provider]
+    if provider != "Gemini":
+        try_order.append("Gemini")
+    try_order += ["OpenAI", "Perplexity", "Local OCR"]
+
+    last_err = None
+    for p in try_order:
         try:
-            result = analyze_gemini(model, image_or_pdf)
-            st.session_state.gemini_available = True
-            st.session_state.last_gemini_error_time = None
-            st.session_state.gemini_retry_count = 0
-            return result
+            if p == "Local OCR":
+                return analyze_with_local_chain(image_or_pdf, source_type)
+            if p == "Gemini":
+                if not model_bundle.get("gemini"):
+                    continue
+                if can_try_gemini():
+                    result = analyze_gemini(model_bundle["gemini"], image_or_pdf)
+                    st.session_state.gemini_available = True
+                    st.session_state.last_gemini_error_time = None
+                    st.session_state.gemini_retry_count = 0
+                    return result
+            elif p == "OpenAI" and model_bundle.get("openai"):
+                img = image_or_pdf if source_type == "image" else convert_from_bytes(image_or_pdf, dpi=300)[0]
+                return analyze_openai(model_bundle["openai"], image_to_bytes(img))
+            elif p == "Perplexity" and model_bundle.get("perplexity"):
+                img = image_or_pdf if source_type == "image" else convert_from_bytes(image_or_pdf, dpi=300)[0]
+                return analyze_perplexity(model_bundle["perplexity"], image_to_bytes(img))
         except Exception as e:
+            last_err = e
             msg = str(e).lower()
-            if "429" in msg or "quota" in msg or "rate limit" in msg:
+            if p == "Gemini" and ("429" in msg or "quota" in msg or "rate limit" in msg):
                 st.session_state.gemini_available = False
                 st.session_state.last_gemini_error_time = datetime.now()
                 st.session_state.gemini_retry_count += 1
-                st.warning("Gemini quota exhausted. Switching to local OCR fallback.")
-            else:
-                raise
-    return analyze_with_local_chain(image_or_pdf, source_type)
+                st.warning("Gemini quota exhausted. Switching to next provider.")
+            continue
+    raise RuntimeError(f"All providers failed: {last_err}")
 
 def render_bill_result(data, source_name, save_to_db=False):
     if not isinstance(data, dict):
@@ -560,25 +668,28 @@ def make_excel_download(df, filename, label="📥 Download Excel", key="excel_do
         df.to_excel(writer, index=False, sheet_name="Batch Summary")
     st.download_button(label, data=buffer.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key=key)
 
-def process_pdf_pages(model, pdf_bytes, source_name):
+def process_pdf_pages(model_bundle, pdf_bytes, source_name):
     results = []
     pages = convert_from_bytes(pdf_bytes, dpi=300)
     for p_idx, page_img in enumerate(pages, start=1):
         try:
-            data = analyze_with_auto_fallback(model, page_img, source_type="image")
+            data = analyze_with_auto_fallback(model_bundle, page_img, source_type="image")
             results.append({"page": p_idx, "source": source_name, "data": data, "error": None})
         except Exception as e:
             results.append({"page": p_idx, "source": source_name, "data": None, "error": str(e)})
     return results
 
-def render_upload_module(model):
-    st.markdown('<div class="deep-csc-header"><div class="branding-text"><h1>🧾 AI Multi-Bill OCR Processor</h1><p style="color: #94a3b8; margin: 5px 0 0 0;">Automated structural data parsing pipeline powered by Gemini Vision Core.</p></div><div class="csc-meta-badge">📍 <b>Deep Digital Seva Kendra</b><br>👤 Owner: Deepak | ID: 256423250015</div><div class="branding-badge">Deep CSC AI</div></div>', unsafe_allow_html=True)
+def render_upload_module(model_bundle):
+    st.markdown('<div class="deep-csc-header"><div class="branding-text"><h1>🧾 AI Multi-Bill OCR Processor</h1><p style="color: #94a3b8; margin: 5px 0 0 0;">Automated structural data parsing pipeline powered by multiple providers.</p></div><div class="csc-meta-badge">📍 <b>Deep Digital Seva Kendra</b><br>👤 Owner: Deepak | ID: 256423250015</div><div class="branding-badge">Deep CSC AI</div></div>', unsafe_allow_html=True)
 
     if st.button("🔄 Retry Gemini Now", key="retry_gemini", use_container_width=True):
         st.session_state.gemini_available = True
         st.session_state.last_gemini_error_time = None
         st.session_state.gemini_retry_count = 0
         st.success("Gemini retry enabled. Next request will try Gemini first.")
+
+    provider = st.selectbox("Choose provider", ["Gemini", "OpenAI", "Perplexity", "Local OCR"], index=["Gemini", "OpenAI", "Perplexity", "Local OCR"].index(st.session_state.selected_provider), key="provider_select")
+    st.session_state.selected_provider = provider
 
     uploaded_files = st.file_uploader("Drop batch bill images or PDF files below (Multi-upload supported)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
     if not uploaded_files:
@@ -604,7 +715,7 @@ def render_upload_module(model):
 
             if st.button("⚡ Process All Pages", key=f"process_all_{idx}", use_container_width=True):
                 with st.spinner("Processing all PDF pages..."):
-                    st.session_state.batch_results[file.name] = process_pdf_pages(model, pdf_bytes, file.name)
+                    st.session_state.batch_results[file.name] = process_pdf_pages(model_bundle, pdf_bytes, file.name)
                 st.success("All pages processed successfully!")
 
             results = st.session_state.batch_results.get(file.name, [])
@@ -640,7 +751,7 @@ def render_upload_module(model):
                 if st.button("⚡ Execute AI Analysis", key=f"btn_{idx}", use_container_width=True):
                     with st.spinner("AI engine parsing structural metadata..."):
                         try:
-                            data = analyze_with_auto_fallback(model, image, source_type="image")
+                            data = analyze_with_auto_fallback(model_bundle, image, source_type="image")
                             render_bill_result(data, file.name, save_to_db=True)
                         except Exception as e:
                             st.error(f"Structural Parsing Fault: {e}")
@@ -651,7 +762,12 @@ def main():
     init_db()
     init_auth()
     init_runtime_state()
-    model = setup_gemini()
+
+    model_bundle = {
+        "gemini": setup_gemini(),
+        "openai": setup_openai(),
+        "perplexity": setup_perplexity(),
+    }
 
     if not st.session_state.logged_in:
         do_login()
@@ -672,7 +788,7 @@ def main():
         if st.button("🚪 Terminate Session", use_container_width=True, key="terminate_session"):
             terminate_session()
 
-    render_upload_module(model)
+    render_upload_module(model_bundle)
 
 if __name__ == "__main__":
     main()
