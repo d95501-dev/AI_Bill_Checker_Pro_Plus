@@ -206,20 +206,32 @@ def can_try_gemini():
 def preprocess_for_ocr(image):
     if not isinstance(image, Image.Image):
         image = Image.open(image)
+    image = image.convert("RGB")
     gray = ImageOps.grayscale(image)
-    gray = gray.filter(ImageFilter.MedianFilter())
-    arr = np.array(gray)
-    arr = np.where(arr > 180, 255, 0).astype("uint8")
-    return Image.fromarray(arr)
+    gray = ImageOps.autocontrast(gray)
+    gray = gray.resize((gray.width * 2, gray.height * 2))
+    arr = np.array(gray, dtype=np.float32)
+    arr = (arr - arr.min()) / (arr.max() - arr.min() + 1e-6) * 255.0
+    arr = np.clip(arr, 0, 255).astype("uint8")
+    img = Image.fromarray(arr)
+    img = img.filter(ImageFilter.SHARPEN)
+    img = img.filter(ImageFilter.MedianFilter(size=3))
+    return img
 
 def extract_page_text_from_image(image):
     if pytesseract is None:
         return ""
     processed = preprocess_for_ocr(image)
-    try:
-        return pytesseract.image_to_string(processed, config="--psm 6")
-    except Exception:
-        return pytesseract.image_to_string(processed)
+    configs = ["--psm 6", "--psm 11", "--psm 4"]
+    texts = []
+    for cfg in configs:
+        try:
+            txt = pytesseract.image_to_string(processed, config=cfg)
+            if txt and txt.strip():
+                texts.append(txt)
+        except Exception:
+            pass
+    return max(texts, key=len, default="")
 
 def local_ocr_from_image(image):
     if pytesseract is None:
@@ -276,12 +288,16 @@ def run_tesseract(image_or_pdf_bytes, source_type="image"):
 
 def parse_bill_text_locally(text):
     text = text or ""
+    if not text.strip():
+        return {"shop_name": None, "bill_date": None, "gst_number": None, "items": [], "total": None, "_raw_text": ""}
+
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
 
     shop_name = None
-    for ln in lines[:8]:
-        if len(ln) >= 3 and not re.search(r'\b(total|amount|date|invoice|gst|tax|qty|rate|hsn)\b', ln, re.IGNORECASE):
-            shop_name = ln[:60]
+    for ln in lines[:10]:
+        clean = re.sub(r'[^A-Za-z0-9&.,()/-\s]', ' ', ln).strip()
+        if len(clean) >= 3 and not re.search(r'\b(total|amount|date|invoice|gst|tax|qty|rate|hsn|memo|cash)\b', clean, re.IGNORECASE):
+            shop_name = clean[:60]
             break
     if not shop_name and lines:
         shop_name = lines[0][:60]
@@ -304,8 +320,7 @@ def parse_bill_text_locally(text):
 
     total = None
     for pat in [
-        r'(?:grand\s*total|net\s*amount|total\s*amount|amount\s*due|invoice\s*total|total)\s*[:\-]?\s*₹?\s*([0-9,]+(?:\.[0-9]{1,2})?)',
-        r'(?:grand\s*total|net\s*amount|total\s*amount|amount\s*due|invoice\s*total|total)\s*[:\-]?\s*([0-9,]+(?:\.[0-9]{1,2})?)',
+        r'(?:grand\s*total|net\s*amount|total\s*amount|amount\s*due|invoice\s*total|final\s*total|total)\s*[:\-]?\s*₹?\s*([0-9,]+(?:\.[0-9]{1,2})?)',
         r'₹\s*([0-9,]+(?:\.[0-9]{1,2})?)'
     ]:
         m = re.search(pat, text, re.IGNORECASE)
@@ -315,17 +330,18 @@ def parse_bill_text_locally(text):
 
     items = []
     for ln in lines:
-        if re.search(r'\b(qty|rate|amount)\b', ln, re.IGNORECASE):
+        if re.search(r'\b(qty|rate|amount|particulars)\b', ln, re.IGNORECASE):
             continue
-        if re.search(r'\d', ln) and (re.search(r'₹|rs\.?|amount', ln, re.IGNORECASE) or len(ln) > 12):
-            items.append({"name": ln[:60], "qty": "", "rate": "", "amount": ""})
+        if re.search(r'\d', ln) and len(ln) > 8:
+            items.append({"name": ln[:80], "qty": "", "rate": "", "amount": ""})
 
     return {
         "shop_name": shop_name,
         "bill_date": bill_date,
         "gst_number": gst_number,
-        "items": items[:20],
-        "total": total
+        "items": items[:25],
+        "total": total,
+        "_raw_text": text
     }
 
 def analyze_gemini(model, file_payload):
@@ -366,9 +382,11 @@ def score_ocr_text(text):
         score += 2
     if "amount" in t:
         score += 2
+    if "memo" in t or "cash" in t:
+        score += 1
     if re.search(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", t):
         score += 2
-    if len(text.strip()) > 120:
+    if len(text.strip()) > 80:
         score += 1
     return score
 
@@ -382,6 +400,8 @@ def merge_ocr_results(ocr_runs):
         if score > best_score:
             best_score = score
             best_text = text
+    if not best_text.strip():
+        best_text = "\n".join([t for _, t in ocr_runs if isinstance(t, str) and t and not t.startswith("ERROR:")])
     return parse_bill_text_locally(best_text)
 
 def analyze_with_local_chain(image_or_pdf, source_type="image"):
@@ -389,9 +409,7 @@ def analyze_with_local_chain(image_or_pdf, source_type="image"):
     try:
         if source_type == "pdf":
             pages = convert_from_bytes(image_or_pdf, dpi=300)
-            page_texts = []
-            for page in pages:
-                page_texts.append(extract_page_text_from_image(page))
+            page_texts = [extract_page_text_from_image(page) for page in pages]
             ocr_runs.append(("Tesseract", "\n".join(page_texts)))
         else:
             ocr_runs.append(("Tesseract", extract_page_text_from_image(image_or_pdf)))
@@ -408,7 +426,14 @@ def analyze_with_local_chain(image_or_pdf, source_type="image"):
     except Exception as ex:
         ocr_runs.append(("EasyOCR", f"ERROR: {ex}"))
 
-    return merge_ocr_results(ocr_runs)
+    result = merge_ocr_results(ocr_runs)
+    best_raw = ""
+    for _, txt in ocr_runs:
+        if isinstance(txt, str) and txt and not txt.startswith("ERROR:") and len(txt) > len(best_raw):
+            best_raw = txt
+    result["_raw_text"] = best_raw
+    result["_ocr_runs"] = {k: v for k, v in ocr_runs}
+    return result
 
 def analyze_with_auto_fallback(model, image_or_pdf, source_type="image"):
     if can_try_gemini():
@@ -433,6 +458,13 @@ def render_bill_result(data, source_name, save_to_db=False):
     if not isinstance(data, dict):
         st.error("AI se data nahi mil paaya.")
         return
+
+    with st.expander("🧪 OCR Debug Output", expanded=False):
+        st.write("Raw OCR text:")
+        st.code(data.get("_raw_text", ""), language="text")
+        st.write("OCR engine outputs:")
+        st.json(data.get("_ocr_runs", {}))
+
     shop_name = str(data.get("shop_name") or "Unknown Shop").strip()
     bill_date = str(data.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
     gst_number = data.get("gst_number") or "N/A"
@@ -446,6 +478,7 @@ def render_bill_result(data, source_name, save_to_db=False):
         c2.markdown(f"**🛡️ GSTIN Registry Validation:** :orange[⚠️ Format Mismatch - {formatted_gst}]")
     else:
         c2.markdown("**🛡️ GSTIN Registry Validation:** :red[ℹ️ Not Disclosed]")
+
     items = normalize_items(data.get("items"))
     if items:
         df = pd.DataFrame(items)
@@ -456,32 +489,44 @@ def render_bill_result(data, source_name, save_to_db=False):
         calculated_total = 0.0
         df = pd.DataFrame(columns=["name", "qty", "rate", "amount"])
         st.info("No items detected.")
+
     bill_total = safe_float(data.get("total", 0))
     diff = abs(calculated_total - bill_total)
     status_txt = "Matched" if diff < 1 else "Mismatch"
+
     x1, x2 = st.columns(2)
     with x1:
         st.metric("Summation of Extracted Items", f"₹{calculated_total:,.2f}")
     with x2:
         st.metric("Declared Invoice Total", f"₹{bill_total:,.2f}")
+
     if status_txt == "Matched":
         st.success("🎯 Auto-Arithmetic Audit Pass.")
     else:
         st.error(f"🛑 Audit Discrepancy Found: ₹{diff:,.2f}")
+
     if save_to_db:
         saved = insert_bill(shop_name, bill_date, gst_number, bill_total, calculated_total, status_txt)
         if saved:
             st.toast("Saved to DB", icon="💾")
+
     excel_buffer = BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Parsed Invoice Data")
+
     safe_shop = re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)
     safe_source = re.sub(r'[^A-Za-z0-9_-]+', '_', str(source_name))
     st.download_button("📥 Export Excel Data Sheets", data=excel_buffer.getvalue(), file_name=f"{safe_shop}_ledger.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key=f"excel_{safe_source}")
+
     pdf_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     doc = SimpleDocTemplate(pdf_temp.name)
     styles = getSampleStyleSheet()
-    elements = [Paragraph(f"Invoice Summary: {shop_name}", styles["Title"]), Spacer(1, 10), Paragraph(f"Date: {bill_date} | GSTIN: {gst_number}", styles["Normal"]), Paragraph(f"Verified Final Amount: INR {bill_total:.2f}", styles["Heading3"])]
+    elements = [
+        Paragraph(f"Invoice Summary: {shop_name}", styles["Title"]),
+        Spacer(1, 10),
+        Paragraph(f"Date: {bill_date} | GSTIN: {gst_number}", styles["Normal"]),
+        Paragraph(f"Verified Final Amount: INR {bill_total:.2f}", styles["Heading3"])
+    ]
     doc.build(elements)
     with open(pdf_temp.name, "rb") as f:
         st.download_button("📄 Download Sign-off PDF", f.read(), file_name=f"{safe_shop}_receipt.pdf", mime="application/pdf", use_container_width=True, key=f"pdf_{safe_source}")
