@@ -20,7 +20,7 @@ APP_TITLE = "Deep CSC - AI Bill Processor Premium"
 DB_PATH = "bills.db"
 DEFAULT_USERNAME = st.secrets.get("APP_USERNAME", "admin")
 DEFAULT_PASSWORD = st.secrets.get("APP_PASSWORD", "password123")
-NAPS2_PATH = r"C:\Program Files\NAPS2\NAPS2.exe"
+NAPS2_PATH = r"C:\\Program Files\\NAPS2\\NAPS2.exe"
 
 def setup_page():
     st.set_page_config(
@@ -211,7 +211,7 @@ def parse_json_from_response(response_text):
     if not response_text:
         raise ValueError("Empty response from model")
     raw = response_text.strip().replace("```json", "").replace("```", "").strip()
-    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    match = re.search(r"\\{.*\\}", raw, re.DOTALL)
     if match:
         raw = match.group(0)
     return json.loads(raw)
@@ -244,10 +244,14 @@ def analyze_bill(model, file_payload):
     raise last_error
 
 def safe_float(value):
-    def process_pdf_pages(model, pdf_bytes, source_name):
+    try:
+        return float(str(value).replace(",", "").strip())
+    except Exception:
+        return 0.0
+
+def process_pdf_pages(model, pdf_bytes, source_name):
     results = []
     pages = convert_from_bytes(pdf_bytes, dpi=200)
-
     for p_idx, page_img in enumerate(pages, start=1):
         try:
             data = analyze_bill(model, page_img)
@@ -265,10 +269,6 @@ def safe_float(value):
                 "error": str(e)
             })
     return results
-    try:
-        return float(str(value).replace(",", "").strip())
-    except Exception:
-        return 0.0
 
 def render_bill_result(data, source_name):
     if not isinstance(data, dict):
@@ -433,13 +433,9 @@ def render_upload_module(model):
 
             for p_idx, page_img in enumerate(pages, start=1):
                 st.markdown(f"### 📄 Page {p_idx}")
-                col_img, col_act = st.columns([1, 2], gap="large")
-
+                col_img, _ = st.columns([1, 2], gap="large")
                 with col_img:
                     st.image(page_img, caption=f"{file.name} - Page {p_idx}", use_container_width=True)
-
-                with col_act:
-                    st.caption("This page will be included in batch processing.")
 
             if results:
                 st.markdown("## ✅ Batch Results")
@@ -501,7 +497,6 @@ def render_hardware_module():
                                 st.rerun()
                             else:
                                 st.error("Scanner file successfully generate nahi kar paaya.")
-
                         except subprocess.CalledProcessError as e:
                             st.error(f"NAPS2 Hardware Interface Error: {e.stderr}")
                         except Exception as e:
