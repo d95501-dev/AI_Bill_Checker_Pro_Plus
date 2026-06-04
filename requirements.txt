@@ -1,7 +1,10 @@
-streamlit
-google-generativeai
-Pillow
+numpy
 pandas
+pillow
+pytesseract
+pdf2image
 reportlab
 openpyxl
-pdf2image
+google-generativeai
+paddleocr
+easyocr
