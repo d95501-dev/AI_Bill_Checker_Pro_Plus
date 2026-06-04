@@ -1,6 +1,6 @@
 import streamlit as st
 import google.generativeai as genai
-from PIL import Image, ImageOps, ImageFilter
+from PIL import Image
 import pandas as pd
 from io import BytesIO
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
@@ -10,25 +10,7 @@ import json
 import re
 import sqlite3
 from datetime import datetime
-import numpy as np
-from pdf2image import convert_from_bytes
 import base64
-from pathlib import Path
-
-try:
-    import pytesseract
-except Exception:
-    pytesseract = None
-
-try:
-    from paddleocr import PaddleOCR
-except Exception:
-    PaddleOCR = None
-
-try:
-    import easyocr
-except Exception:
-    easyocr = None
 
 try:
     from openai import OpenAI
@@ -117,9 +99,8 @@ def init_db():
     conn.close()
 
 def insert_bill(shop, date, gst, total, calc_total, status):
-    conn = None
+    conn = sqlite3.connect(DB_PATH, timeout=30)
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=30)
         cursor = conn.cursor()
         cursor.execute("""
             INSERT OR IGNORE INTO bills
@@ -128,11 +109,8 @@ def insert_bill(shop, date, gst, total, calc_total, status):
         """, (shop, date, gst, total, calc_total, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
         return cursor.rowcount > 0
-    except Exception:
-        return False
     finally:
-        if conn:
-            conn.close()
+        conn.close()
 
 def init_auth():
     if "logged_in" not in st.session_state:
@@ -140,11 +118,11 @@ def init_auth():
 
 def init_runtime_state():
     defaults = {
+        "selected_provider": "Gemini",
         "gemini_available": True,
         "last_gemini_error_time": None,
         "gemini_cooldown_seconds": 900,
         "gemini_retry_count": 0,
-        "selected_provider": "Gemini",
         "batch_results": {},
     }
     for k, v in defaults.items():
@@ -184,10 +162,7 @@ def setup_openai():
     return OpenAI(api_key=api_key)
 
 def setup_perplexity():
-    api_key = st.secrets.get("PERPLEXITY_API_KEY", "")
-    if not api_key or requests is None:
-        return None
-    return api_key
+    return st.secrets.get("PERPLEXITY_API_KEY", "")
 
 def validate_gst(gst_str):
     if not gst_str:
@@ -202,7 +177,12 @@ def normalize_items(items):
         return cleaned
     for it in items:
         if isinstance(it, dict):
-            cleaned.append({"name": it.get("name") or "", "qty": it.get("qty") or "", "rate": it.get("rate") or "", "amount": it.get("amount") or ""})
+            cleaned.append({
+                "name": it.get("name") or "",
+                "qty": it.get("qty") or "",
+                "rate": it.get("rate") or "",
+                "amount": it.get("amount") or ""
+            })
     return cleaned
 
 def parse_json_from_response(response_text):
@@ -229,112 +209,6 @@ def can_try_gemini():
     cooldown = st.session_state.get("gemini_cooldown_seconds", 900)
     return (datetime.now() - last_error).total_seconds() >= cooldown
 
-def preprocess_for_ocr(image):
-    if not isinstance(image, Image.Image):
-        image = Image.open(image)
-    image = image.convert("L")
-    image = ImageOps.autocontrast(image)
-    image = image.resize((image.width * 3, image.height * 3))
-    arr = np.array(image)
-    arr = np.where(arr > 180, 255, 0).astype("uint8")
-    img = Image.fromarray(arr)
-    img = img.filter(ImageFilter.SHARPEN)
-    img = img.filter(ImageFilter.MedianFilter(size=3))
-    return img
-
-def extract_page_text_from_image(image):
-    if pytesseract is None:
-        return ""
-    processed = preprocess_for_ocr(image)
-    configs = ["--psm 6", "--psm 11", "--psm 4", "--psm 3"]
-    texts = []
-    for cfg in configs:
-        try:
-            txt = pytesseract.image_to_string(processed, config=cfg)
-            if txt and txt.strip():
-                texts.append(txt.strip())
-        except Exception:
-            pass
-    return max(texts, key=len, default="")
-
-def run_paddleocr(image_or_pdf_bytes, source_type="image"):
-    if PaddleOCR is None:
-        raise RuntimeError("PaddleOCR not installed")
-    ocr = PaddleOCR(use_angle_cls=True, lang="en", show_log=False)
-    texts = []
-    if source_type == "pdf":
-        pages = convert_from_bytes(image_or_pdf_bytes, dpi=300)
-        for page in pages:
-            result = ocr.ocr(np.array(page), cls=True)
-            for line in result[0] if result and result[0] else []:
-                texts.append(line[1][0])
-    else:
-        img = image_or_pdf_bytes if isinstance(image_or_pdf_bytes, Image.Image) else Image.open(image_or_pdf_bytes)
-        result = ocr.ocr(np.array(img), cls=True)
-        for line in result[0] if result and result[0] else []:
-            texts.append(line[1][0])
-    return "\n".join(texts)
-
-def run_easyocr(image_or_pdf_bytes, source_type="image"):
-    if easyocr is None:
-        raise RuntimeError("EasyOCR not installed")
-    reader = easyocr.Reader(['en'], gpu=False)
-    texts = []
-    if source_type == "pdf":
-        pages = convert_from_bytes(image_or_pdf_bytes, dpi=300)
-        for page in pages:
-            result = reader.readtext(np.array(page), detail=0)
-            texts.extend(result)
-    else:
-        img = image_or_pdf_bytes if isinstance(image_or_pdf_bytes, Image.Image) else Image.open(image_or_pdf_bytes)
-        result = reader.readtext(np.array(img), detail=0)
-        texts.extend(result)
-    return "\n".join(texts)
-
-def parse_bill_text_locally(text):
-    text = text or ""
-    if not text.strip():
-        return {"shop_name": None, "bill_date": None, "gst_number": None, "items": [], "total": None, "_raw_text": ""}
-
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-
-    shop_name = None
-    for ln in lines[:10]:
-        clean = re.sub(r'[^A-Za-z0-9&.,()/-\s]', ' ', ln).strip()
-        if len(clean) >= 3 and not re.search(r'\b(total|amount|date|invoice|gst|tax|qty|rate|hsn|memo|cash)\b', clean, re.IGNORECASE):
-            shop_name = clean[:60]
-            break
-    if not shop_name and lines:
-        shop_name = lines[0][:60]
-
-    bill_date = None
-    for pat in [r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})', r'(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4})', r'(\d{4}[/-]\d{1,2}[/-]\d{1,2})']:
-        m = re.search(pat, text, re.IGNORECASE)
-        if m:
-            bill_date = m.group(1)
-            break
-
-    gst_number = None
-    gst_match = re.search(r'\b\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z]\d\b', text.upper())
-    if gst_match:
-        gst_number = gst_match.group(0)
-
-    total = None
-    for pat in [r'(?:grand\s*total|net\s*amount|total\s*amount|amount\s*due|invoice\s*total|final\s*total|total)\s*[:\-]?\s*₹?\s*([0-9,]+(?:\.[0-9]{1,2})?)', r'₹\s*([0-9,]+(?:\.[0-9]{1,2})?)']:
-        m = re.search(pat, text, re.IGNORECASE)
-        if m:
-            total = m.group(1)
-            break
-
-    items = []
-    for ln in lines:
-        if re.search(r'\b(qty|rate|amount|particulars)\b', ln, re.IGNORECASE):
-            continue
-        if re.search(r'\d', ln) and len(ln) > 8:
-            items.append({"name": ln[:80], "qty": "", "rate": "", "amount": ""})
-
-    return {"shop_name": shop_name, "bill_date": bill_date, "gst_number": gst_number, "items": items[:25], "total": total, "_raw_text": text}
-
 def build_schema_prompt():
     return """
 You are a document extraction specialist.
@@ -356,14 +230,16 @@ Rules:
 - Do not wrap in markdown.
 """
 
-def analyze_gemini(model, file_payload):
-    response = model.generate_content([build_schema_prompt(), file_payload])
+def analyze_gemini(model, image):
+    response = model.generate_content([build_schema_prompt(), image])
     return parse_json_from_response(getattr(response, "text", ""))
 
-def analyze_openai(client, image_bytes):
+def analyze_openai(client, image):
     if client is None:
         raise RuntimeError("OpenAI not configured")
-    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    buf = BytesIO()
+    image.save(buf, format="JPEG", quality=95)
+    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
     resp = client.chat.completions.create(
         model=st.secrets.get("OPENAI_MODEL", "gpt-4o-mini"),
         messages=[
@@ -377,10 +253,12 @@ def analyze_openai(client, image_bytes):
     )
     return parse_json_from_response(resp.choices[0].message.content)
 
-def analyze_perplexity(api_key, image_bytes):
-    if api_key is None or requests is None:
+def analyze_perplexity(api_key, image):
+    if not api_key or requests is None:
         raise RuntimeError("Perplexity not configured")
-    b64 = base64.b64encode(image_bytes).decode("utf-8")
+    buf = BytesIO()
+    image.save(buf, format="JPEG", quality=95)
+    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
     url = "https://api.perplexity.ai/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     payload = {
@@ -425,132 +303,35 @@ def analyze_perplexity(api_key, image_bytes):
     }
     r = requests.post(url, headers=headers, json=payload, timeout=120)
     r.raise_for_status()
-    data = r.json()
-    return parse_json_from_response(data["choices"][0]["message"]["content"])
-
-def score_ocr_text(text):
-    score = 0
-    t = (text or "").lower()
-    if "total" in t:
-        score += 4
-    if "invoice" in t:
-        score += 3
-    if "gst" in t:
-        score += 3
-    if "qty" in t or "quantity" in t:
-        score += 2
-    if "rate" in t:
-        score += 2
-    if "amount" in t:
-        score += 2
-    if "memo" in t or "cash" in t:
-        score += 1
-    if re.search(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", t):
-        score += 2
-    if len(text.strip()) > 80:
-        score += 1
-    return score
-
-def merge_ocr_results(ocr_runs):
-    best_text = ""
-    best_score = -1
-    for _, text in ocr_runs:
-        if not text or str(text).startswith("ERROR:"):
-            continue
-        score = score_ocr_text(text)
-        if score > best_score:
-            best_score = score
-            best_text = text
-    if not best_text.strip():
-        best_text = "\n".join([t for _, t in ocr_runs if isinstance(t, str) and t and not t.startswith("ERROR:")])
-    return parse_bill_text_locally(best_text)
-
-def analyze_with_local_chain(image_or_pdf, source_type="image"):
-    ocr_runs = []
-    debug_info = {}
-
-    try:
-        if source_type == "pdf":
-            pages = convert_from_bytes(image_or_pdf, dpi=300)
-            texts = [extract_page_text_from_image(page) for page in pages]
-            joined = "\n".join(texts)
-            ocr_runs.append(("Tesseract", joined))
-            debug_info["tesseract_len"] = len(joined or "")
-        else:
-            txt = extract_page_text_from_image(image_or_pdf)
-            ocr_runs.append(("Tesseract", txt))
-            debug_info["tesseract_len"] = len(txt or "")
-    except Exception as ex:
-        ocr_runs.append(("Tesseract", f"ERROR: {ex}"))
-
-    try:
-        ptxt = run_paddleocr(image_or_pdf, source_type)
-        ocr_runs.append(("PaddleOCR", ptxt))
-        debug_info["paddle_len"] = len(ptxt or "")
-    except Exception as ex:
-        ocr_runs.append(("PaddleOCR", f"ERROR: {ex}"))
-
-    try:
-        etxt = run_easyocr(image_or_pdf, source_type)
-        ocr_runs.append(("EasyOCR", etxt))
-        debug_info["easy_len"] = len(etxt or "")
-    except Exception as ex:
-        ocr_runs.append(("EasyOCR", f"ERROR: {ex}"))
-
-    result = merge_ocr_results(ocr_runs)
-    best_raw = ""
-    for _, txt in ocr_runs:
-        if isinstance(txt, str) and txt and not txt.startswith("ERROR:") and len(txt) > len(best_raw):
-            best_raw = txt
-    result["_raw_text"] = best_raw
-    result["_ocr_runs"] = {k: v for k, v in ocr_runs}
-    result["_debug_info"] = debug_info
-    return result
+    return parse_json_from_response(r.json()["choices"][0]["message"]["content"])
 
 def image_to_bytes(image):
-    if isinstance(image, Image.Image):
-        buf = BytesIO()
-        image.save(buf, format="JPEG", quality=95)
-        return buf.getvalue()
-    if hasattr(image, "getvalue"):
-        return image.getvalue()
-    if hasattr(image, "read"):
-        try:
-            image.seek(0)
-        except Exception:
-            pass
-        return image.read()
-    return bytes(image)
+    buf = BytesIO()
+    image.save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
 
-def analyze_with_auto_fallback(model_bundle, image_or_pdf, source_type="image"):
+def analyze_with_auto_fallback(model_bundle, image):
     provider = st.session_state.get("selected_provider", "Gemini")
-    try_order = [provider]
-    if provider != "Gemini":
-        try_order.append("Gemini")
-    try_order += ["OpenAI", "Perplexity", "Local OCR"]
-
+    order = [provider, "Gemini", "OpenAI", "Perplexity"]
+    seen = set()
     last_err = None
-    for p in try_order:
-        try:
-            if p == "Local OCR":
-                return analyze_with_local_chain(image_or_pdf, source_type)
 
+    for p in order:
+        if p in seen:
+            continue
+        seen.add(p)
+        try:
             if p == "Gemini":
                 if model_bundle.get("gemini") and can_try_gemini():
-                    result = analyze_gemini(model_bundle["gemini"], image_or_pdf)
+                    result = analyze_gemini(model_bundle["gemini"], image)
                     st.session_state.gemini_available = True
                     st.session_state.last_gemini_error_time = None
                     st.session_state.gemini_retry_count = 0
                     return result
-
             elif p == "OpenAI" and model_bundle.get("openai"):
-                img = image_or_pdf if source_type == "image" else convert_from_bytes(image_or_pdf, dpi=300)[0]
-                return analyze_openai(model_bundle["openai"], image_to_bytes(img))
-
+                return analyze_openai(model_bundle["openai"], image)
             elif p == "Perplexity" and model_bundle.get("perplexity"):
-                img = image_or_pdf if source_type == "image" else convert_from_bytes(image_or_pdf, dpi=300)[0]
-                return analyze_perplexity(model_bundle["perplexity"], image_to_bytes(img))
-
+                return analyze_perplexity(model_bundle["perplexity"], image)
         except Exception as e:
             last_err = e
             msg = str(e).lower()
@@ -568,14 +349,6 @@ def render_bill_result(data, source_name, save_to_db=False):
         st.error("AI se data nahi mil paaya.")
         return
 
-    with st.expander("🧪 OCR Debug Output", expanded=False):
-        st.write("Debug info:")
-        st.json(data.get("_debug_info", {}))
-        st.write("Raw OCR text:")
-        st.code(data.get("_raw_text", ""), language="text")
-        st.write("OCR engine outputs:")
-        st.json(data.get("_ocr_runs", {}))
-
     shop_name = str(data.get("shop_name") or "Unknown Shop").strip()
     bill_date = str(data.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
     gst_number = data.get("gst_number") or "N/A"
@@ -584,7 +357,6 @@ def render_bill_result(data, source_name, save_to_db=False):
     c1, c2 = st.columns(2)
     c1.markdown(f"**🗓️ Declared Invoice Date:** {bill_date}")
     is_valid_gst, formatted_gst = validate_gst(gst_number)
-
     if gst_number != "N/A" and is_valid_gst:
         c2.markdown(f"**🛡️ GSTIN Registry Validation:** :green[✅ Valid - {formatted_gst}]")
     elif gst_number != "N/A":
@@ -599,8 +371,8 @@ def render_bill_result(data, source_name, save_to_db=False):
         df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
         calculated_total = float(df["amount"].sum())
     else:
-        calculated_total = 0.0
         df = pd.DataFrame(columns=["name", "qty", "rate", "amount"])
+        calculated_total = 0.0
         st.info("No items detected.")
 
     bill_total = safe_float(data.get("total", 0))
@@ -629,7 +401,14 @@ def render_bill_result(data, source_name, save_to_db=False):
 
     safe_shop = re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)
     safe_source = re.sub(r'[^A-Za-z0-9_-]+', '_', str(source_name))
-    st.download_button("📥 Export Excel Data Sheets", data=excel_buffer.getvalue(), file_name=f"{safe_shop}_ledger.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key=f"excel_{safe_source}")
+    st.download_button(
+        "📥 Export Excel Data Sheets",
+        data=excel_buffer.getvalue(),
+        file_name=f"{safe_shop}_ledger.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        key=f"excel_{safe_source}"
+    )
 
     pdf_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     doc = SimpleDocTemplate(pdf_temp.name)
@@ -642,7 +421,14 @@ def render_bill_result(data, source_name, save_to_db=False):
     ]
     doc.build(elements)
     with open(pdf_temp.name, "rb") as f:
-        st.download_button("📄 Download Sign-off PDF", f.read(), file_name=f"{safe_shop}_receipt.pdf", mime="application/pdf", use_container_width=True, key=f"pdf_{safe_source}")
+        st.download_button(
+            "📄 Download Sign-off PDF",
+            f.read(),
+            file_name=f"{safe_shop}_receipt.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            key=f"pdf_{safe_source}"
+        )
 
 def build_batch_summary(results):
     rows = []
@@ -662,9 +448,29 @@ def build_batch_summary(results):
             bill_total = safe_float(data.get("total", 0))
             diff = abs(calculated_total - bill_total)
             status_txt = "Matched" if diff < 1 else "Mismatch"
-            rows.append({"page": item.get("page"), "source": item.get("source"), "shop_name": shop_name, "bill_date": bill_date, "gst_number": gst_number, "bill_total": bill_total, "calculated_total": calculated_total, "difference": diff, "status": status_txt})
+            rows.append({
+                "page": item.get("page"),
+                "source": item.get("source"),
+                "shop_name": shop_name,
+                "bill_date": bill_date,
+                "gst_number": gst_number,
+                "bill_total": bill_total,
+                "calculated_total": calculated_total,
+                "difference": diff,
+                "status": status_txt
+            })
         else:
-            rows.append({"page": item.get("page"), "source": item.get("source"), "shop_name": None, "bill_date": None, "gst_number": None, "bill_total": None, "calculated_total": None, "difference": None, "status": f"Error: {item.get('error')}"})
+            rows.append({
+                "page": item.get("page"),
+                "source": item.get("source"),
+                "shop_name": None,
+                "bill_date": None,
+                "gst_number": None,
+                "bill_total": None,
+                "calculated_total": None,
+                "difference": None,
+                "status": f"Error: {item.get('error')}"
+            })
     return pd.DataFrame(rows)
 
 def make_excel_download(df, filename, label="📥 Download Excel", key="excel_download"):
@@ -678,14 +484,21 @@ def process_pdf_pages(model_bundle, pdf_bytes, source_name):
     pages = convert_from_bytes(pdf_bytes, dpi=300)
     for p_idx, page_img in enumerate(pages, start=1):
         try:
-            data = analyze_with_auto_fallback(model_bundle, page_img, source_type="image")
+            data = analyze_with_auto_fallback(model_bundle, page_img)
             results.append({"page": p_idx, "source": source_name, "data": data, "error": None})
         except Exception as e:
             results.append({"page": p_idx, "source": source_name, "data": None, "error": str(e)})
     return results
 
 def render_upload_module(model_bundle):
-    st.markdown('<div class="deep-csc-header"><div class="branding-text"><h1>🧾 AI Multi-Bill OCR Processor</h1><p style="color: #94a3b8; margin: 5px 0 0 0;">Automated structural data parsing pipeline powered by multiple providers.</p></div><div class="csc-meta-badge">📍 <b>Deep Digital Seva Kendra</b><br>👤 Owner: Deepak | ID: 256423250015</div><div class="branding-badge">Deep CSC AI</div></div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="deep-csc-header"><div class="branding-text"><h1>🧾 AI Multi-Bill OCR Processor</h1><p style="color: #94a3b8; margin: 5px 0 0 0;">Automated structural data parsing pipeline powered by multiple providers.</p></div><div class="csc-meta-badge">📍 <b>Deep Digital Seva Kendra</b><br>👤 Owner: Deepak | ID: 256423250015</div><div class="branding-badge">Deep CSC AI</div></div>',
+        unsafe_allow_html=True
+    )
+
+    providers = ["Gemini", "OpenAI", "Perplexity"]
+    provider = st.selectbox("Choose provider", providers, index=providers.index(st.session_state.selected_provider), key="provider_select")
+    st.session_state.selected_provider = provider
 
     if st.button("🔄 Retry Gemini Now", key="retry_gemini", use_container_width=True):
         st.session_state.gemini_available = True
@@ -693,11 +506,11 @@ def render_upload_module(model_bundle):
         st.session_state.gemini_retry_count = 0
         st.success("Gemini retry enabled. Next request will try Gemini first.")
 
-    providers = ["Gemini", "OpenAI", "Perplexity", "Local OCR"]
-    provider = st.selectbox("Choose provider", providers, index=providers.index(st.session_state.selected_provider), key="provider_select")
-    st.session_state.selected_provider = provider
-
-    uploaded_files = st.file_uploader("Drop batch bill images or PDF files below (Multi-upload supported)", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
+    uploaded_files = st.file_uploader(
+        "Drop batch bill images or PDF files below (Multi-upload supported)",
+        type=["jpg", "jpeg", "png", "pdf"],
+        accept_multiple_files=True
+    )
     if not uploaded_files:
         return
 
@@ -736,11 +549,7 @@ def render_upload_module(model_bundle):
                 st.markdown("## ✅ Batch Results")
                 for item in results:
                     if item["error"]:
-                        err = item["error"]
-                        if "quota" in err.lower() or "429" in err:
-                            st.warning(f"Page {item['page']}: Gemini quota limit reached.")
-                        else:
-                            st.error(f"Page {item['page']}: {err}")
+                        st.error(f"Page {item['page']}: {item['error']}")
                     else:
                         st.markdown(f"### Page {item['page']} Result")
                         render_bill_result(item["data"], f"{item['source']} (Page {item['page']})", save_to_db=False)
@@ -748,14 +557,13 @@ def render_upload_module(model_bundle):
         else:
             col_img, col_act = st.columns([1, 2], gap="large")
             with col_img:
-                uploaded_bytes = file.getvalue()
-                image = Image.open(BytesIO(uploaded_bytes)).convert("RGB")
+                image = Image.open(BytesIO(file.getvalue())).convert("RGB")
                 st.image(image, caption=f"Source: {file.name}", use_container_width=True)
             with col_act:
                 if st.button("⚡ Execute AI Analysis", key=f"btn_{idx}", use_container_width=True):
                     with st.spinner("AI engine parsing structural metadata..."):
                         try:
-                            data = analyze_with_auto_fallback(model_bundle, image, source_type="image")
+                            data = analyze_with_auto_fallback(model_bundle, image)
                             render_bill_result(data, file.name, save_to_db=True)
                         except Exception as e:
                             st.error(f"Structural Parsing Fault: {e}")
