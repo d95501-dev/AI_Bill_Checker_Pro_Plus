@@ -212,11 +212,19 @@ def preprocess_for_ocr(image):
     arr = np.where(arr > 180, 255, 0).astype("uint8")
     return Image.fromarray(arr)
 
+def extract_page_text_from_image(image):
+    if pytesseract is None:
+        return ""
+    processed = preprocess_for_ocr(image)
+    try:
+        return pytesseract.image_to_string(processed, config="--psm 6")
+    except Exception:
+        return pytesseract.image_to_string(processed)
+
 def local_ocr_from_image(image):
     if pytesseract is None:
         raise RuntimeError("pytesseract not available")
-    processed = preprocess_for_ocr(image)
-    return pytesseract.image_to_string(processed)
+    return extract_page_text_from_image(image)
 
 def local_ocr_from_pdf(pdf_bytes):
     pages = convert_from_bytes(pdf_bytes, dpi=300)
@@ -269,52 +277,98 @@ def run_tesseract(image_or_pdf_bytes, source_type="image"):
 def parse_bill_text_locally(text):
     text = text or ""
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    shop_name = lines[0][:60] if lines else None
+
+    shop_name = None
+    for ln in lines[:8]:
+        if len(ln) >= 3 and not re.search(r'\b(total|amount|date|invoice|gst|tax|qty|rate|hsn)\b', ln, re.IGNORECASE):
+            shop_name = ln[:60]
+            break
+    if not shop_name and lines:
+        shop_name = lines[0][:60]
+
     bill_date = None
-    gst_number = None
-    total = None
-    for pat in [r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})', r'(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4})']:
+    for pat in [
+        r'(\d{1,2}[/-]\d{1,2}[/-]\d{2,4})',
+        r'(\d{1,2}\s+[A-Za-z]{3,9}\s+\d{2,4})',
+        r'(\d{4}[/-]\d{1,2}[/-]\d{1,2})'
+    ]:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
             bill_date = m.group(1)
             break
+
+    gst_number = None
     gst_match = re.search(r'\b\d{2}[A-Z]{5}\d{4}[A-Z]\d[A-Z]\d\b', text.upper())
     if gst_match:
         gst_number = gst_match.group(0)
-    for pat in [r'(?:grand\s*total|net\s*amount|total\s*amount|amount\s*due|total)\s*[:\-]?\s*₹?\s*([0-9,]+(?:\.[0-9]{1,2})?)', r'₹\s*([0-9,]+(?:\.[0-9]{1,2})?)']:
+
+    total = None
+    for pat in [
+        r'(?:grand\s*total|net\s*amount|total\s*amount|amount\s*due|invoice\s*total|total)\s*[:\-]?\s*₹?\s*([0-9,]+(?:\.[0-9]{1,2})?)',
+        r'(?:grand\s*total|net\s*amount|total\s*amount|amount\s*due|invoice\s*total|total)\s*[:\-]?\s*([0-9,]+(?:\.[0-9]{1,2})?)',
+        r'₹\s*([0-9,]+(?:\.[0-9]{1,2})?)'
+    ]:
         m = re.search(pat, text, re.IGNORECASE)
         if m:
             total = m.group(1)
             break
-    return {"shop_name": shop_name, "bill_date": bill_date, "gst_number": gst_number, "items": [], "total": total}
+
+    items = []
+    for ln in lines:
+        if re.search(r'\b(qty|rate|amount)\b', ln, re.IGNORECASE):
+            continue
+        if re.search(r'\d', ln) and (re.search(r'₹|rs\.?|amount', ln, re.IGNORECASE) or len(ln) > 12):
+            items.append({"name": ln[:60], "qty": "", "rate": "", "amount": ""})
+
+    return {
+        "shop_name": shop_name,
+        "bill_date": bill_date,
+        "gst_number": gst_number,
+        "items": items[:20],
+        "total": total
+    }
 
 def analyze_gemini(model, file_payload):
     prompt = """
-Return only valid JSON with:
+You are a document extraction specialist.
+Extract invoice details and return ONLY valid JSON:
 {
-  "shop_name": string or null,
-  "bill_date": string or null,
-  "gst_number": string or null,
-  "items": [{"name": string, "qty": number/string, "rate": number/string, "amount": number/string}],
-  "total": number/string or null
+  "shop_name": null or string,
+  "bill_date": null or string,
+  "gst_number": null or string,
+  "items": [
+    {"name": string, "qty": string, "rate": string, "amount": string}
+  ],
+  "total": null or string
 }
-No markdown, no explanation, no extra text.
+Rules:
+- Use only visible text from the document.
+- If a field is missing, return null.
+- Do not normalize values.
+- Do not add explanations.
+- Do not wrap in markdown.
 """
     response = model.generate_content([prompt, file_payload])
     return parse_json_from_response(getattr(response, "text", ""))
 
 def score_ocr_text(text):
     score = 0
-    t = text.lower()
+    t = (text or "").lower()
     if "total" in t:
+        score += 4
+    if "invoice" in t:
         score += 3
-    if "date" in t:
-        score += 2
     if "gst" in t:
+        score += 3
+    if "qty" in t or "quantity" in t:
+        score += 2
+    if "rate" in t:
+        score += 2
+    if "amount" in t:
         score += 2
     if re.search(r"\d{1,2}[/-]\d{1,2}[/-]\d{2,4}", t):
         score += 2
-    if len(text.strip()) > 100:
+    if len(text.strip()) > 120:
         score += 1
     return score
 
@@ -333,17 +387,27 @@ def merge_ocr_results(ocr_runs):
 def analyze_with_local_chain(image_or_pdf, source_type="image"):
     ocr_runs = []
     try:
+        if source_type == "pdf":
+            pages = convert_from_bytes(image_or_pdf, dpi=300)
+            page_texts = []
+            for page in pages:
+                page_texts.append(extract_page_text_from_image(page))
+            ocr_runs.append(("Tesseract", "\n".join(page_texts)))
+        else:
+            ocr_runs.append(("Tesseract", extract_page_text_from_image(image_or_pdf)))
+    except Exception as ex:
+        ocr_runs.append(("Tesseract", f"ERROR: {ex}"))
+
+    try:
         ocr_runs.append(("PaddleOCR", run_paddleocr(image_or_pdf, source_type)))
     except Exception as ex:
         ocr_runs.append(("PaddleOCR", f"ERROR: {ex}"))
+
     try:
         ocr_runs.append(("EasyOCR", run_easyocr(image_or_pdf, source_type)))
     except Exception as ex:
         ocr_runs.append(("EasyOCR", f"ERROR: {ex}"))
-    try:
-        ocr_runs.append(("Tesseract", run_tesseract(image_or_pdf, source_type)))
-    except Exception as ex:
-        ocr_runs.append(("Tesseract", f"ERROR: {ex}"))
+
     return merge_ocr_results(ocr_runs)
 
 def analyze_with_auto_fallback(model, image_or_pdf, source_type="image"):
@@ -453,7 +517,7 @@ def make_excel_download(df, filename, label="📥 Download Excel", key="excel_do
 
 def process_pdf_pages(model, pdf_bytes, source_name):
     results = []
-    pages = convert_from_bytes(pdf_bytes, dpi=200)
+    pages = convert_from_bytes(pdf_bytes, dpi=300)
     for p_idx, page_img in enumerate(pages, start=1):
         try:
             data = analyze_with_auto_fallback(model, page_img, source_type="image")
@@ -486,7 +550,7 @@ def render_upload_module(model):
         if is_pdf:
             pdf_bytes = file.read()
             try:
-                pages = convert_from_bytes(pdf_bytes, dpi=200)
+                pages = convert_from_bytes(pdf_bytes, dpi=300)
             except Exception as e:
                 st.error(f"PDF parsing error: {e}")
                 continue
