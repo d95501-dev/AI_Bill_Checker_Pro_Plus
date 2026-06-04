@@ -163,7 +163,7 @@ def do_login():
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
 
-    if st.button("Login Server", use_container_width=True):
+    if st.button("Login Server", use_container_width=True, key="login_btn"):
         if username == DEFAULT_USERNAME and password == DEFAULT_PASSWORD:
             st.session_state.logged_in = True
             st.rerun()
@@ -317,7 +317,7 @@ def build_batch_summary(results):
             })
     return pd.DataFrame(rows)
 
-def make_excel_download(df, filename, label="📥 Download Excel"):
+def make_excel_download(df, filename, label="📥 Download Excel", key="excel_download"):
     buffer = BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Batch Summary")
@@ -326,7 +326,8 @@ def make_excel_download(df, filename, label="📥 Download Excel"):
         data=buffer.getvalue(),
         file_name=filename,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
+        use_container_width=True,
+        key=key
     )
 
 def render_bill_result(data, source_name, save_to_db=False):
@@ -389,12 +390,17 @@ def render_bill_result(data, source_name, save_to_db=False):
     excel_buffer = BytesIO()
     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
         df.to_excel(writer, index=False, sheet_name="Parsed Invoice Data")
+
+    safe_shop = re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)
+    unique_id = re.sub(r'[^A-Za-z0-9_-]+', '_', str(source_name))
+
     st.download_button(
         "📥 Export Excel Data Sheets",
         data=excel_buffer.getvalue(),
-        file_name=f"{re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)}_ledger.xlsx",
+        file_name=f"{safe_shop}_ledger.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
+        use_container_width=True,
+        key=f"excel_{unique_id}"
     )
 
     pdf_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
@@ -414,9 +420,10 @@ def render_bill_result(data, source_name, save_to_db=False):
             st.download_button(
                 "📄 Download Sign-off PDF",
                 f.read(),
-                file_name=f"{re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)}_receipt.pdf",
+                file_name=f"{safe_shop}_receipt.pdf",
                 mime="application/pdf",
-                use_container_width=True
+                use_container_width=True,
+                key=f"pdf_{unique_id}"
             )
     with ut3:
         msg_string = f"AI Bill Report - Shop: {shop_name}, Date: {bill_date}, Total: {bill_total:.2f}, Audit: {status_txt}"
@@ -431,7 +438,7 @@ def render_upload_module(model):
 
     if "scanned_file_path" in st.session_state and st.session_state.scanned_file_path:
         st.info("🔄 Hardware Scanner se data received! Neeche preview dekhein.")
-        if st.button("🗑️ Clear Scanned File Cache"):
+        if st.button("🗑️ Clear Scanned File Cache", key="clear_scan_cache"):
             if os.path.exists(st.session_state.scanned_file_path):
                 os.remove(st.session_state.scanned_file_path)
             st.session_state.scanned_file_path = None
@@ -498,7 +505,12 @@ def render_upload_module(model):
                 st.markdown("## 📋 Page-wise Consolidated Summary")
                 summary_df = build_batch_summary(results)
                 st.dataframe(summary_df, use_container_width=True, hide_index=True)
-                make_excel_download(summary_df, f"{file.name}_page_wise_summary.xlsx", "📥 Download Batch Excel")
+                make_excel_download(
+                    summary_df,
+                    f"{file.name}_page_wise_summary.xlsx",
+                    label="📥 Download Batch Excel",
+                    key=f"batch_excel_{idx}"
+                )
 
                 if st.button("💾 Save All Results to Database", key=f"save_all_{idx}", use_container_width=True):
                     saved_count = 0
@@ -554,7 +566,7 @@ def render_hardware_module():
             scan_dpi = st.select_slider("Select Resolution (DPI)", options=[150, 300, 600], value=300)
             output_format = st.radio("Output File Format", ["PNG", "PDF"], horizontal=True)
 
-            if st.button("🚀 Trigger Flatbed Scan"):
+            if st.button("🚀 Trigger Flatbed Scan", key="trigger_scan"):
                 if not os.path.exists(r"C:\\"):
                     st.error("❌ Yeh feature sirf Local Computer (PC) par chalega, Cloud par nahi!")
                 elif not os.path.exists(NAPS2_PATH):
@@ -584,9 +596,9 @@ def render_hardware_module():
 
         with col_print:
             st.markdown("#### 🖨️ Printer Interface")
-            printer_name = st.selectbox("Select Printer", ["Default System Printer", "HP LaserJet Pro", "Canon Pixma"])
-            copies = st.number_input("Number of Copies", min_value=1, value=1)
-            if st.button("🖨️ Send to Printer"):
+            printer_name = st.selectbox("Select Printer", ["Default System Printer", "HP LaserJet Pro", "Canon Pixma"], key="printer_name")
+            copies = st.number_input("Number of Copies", min_value=1, value=1, key="copies")
+            if st.button("🖨️ Send to Printer", key="send_printer"):
                 st.info(f"Sending {copies} copies to {printer_name}...")
 
 def render_dashboard():
@@ -643,7 +655,7 @@ def render_dashboard():
 
     query_col, export_col = st.columns([3, 1], gap="medium")
     with query_col:
-        search_query = st.text_input("⚡ Smart Filter (Input target Vendor Name / Retail Shop keyword string)")
+        search_query = st.text_input("⚡ Smart Filter (Input target Vendor Name / Retail Shop keyword string)", key="dashboard_search")
     with export_col:
         st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
         master_excel_buffer = BytesIO()
@@ -654,7 +666,8 @@ def render_dashboard():
             data=master_excel_buffer.getvalue(),
             file_name="Corporate_Master_Ledger.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
+            use_container_width=True,
+            key="master_export_db"
         )
 
     filtered_df = df_db
@@ -686,10 +699,10 @@ def main():
         """, unsafe_allow_html=True)
 
         st.markdown(f"<p style='color:#cbd5e1; font-size:14px; margin-left:5px;'>Operator: <b style='color:#38bdf8;'>{DEFAULT_USERNAME} (Deepak)</b></p>", unsafe_allow_html=True)
-        app_mode = st.selectbox("Navigate System", ["📤 Upload & Process", "📊 Dashboard & History"])
+        app_mode = st.selectbox("Navigate System", ["📤 Upload & Process", "📊 Dashboard & History"], key="app_mode")
         st.markdown("<br><br><hr style='border-color: #1e293b;'>", unsafe_allow_html=True)
 
-        if st.button("🚪 Terminate Session", use_container_width=True):
+        if st.button("🚪 Terminate Session", use_container_width=True, key="terminate_session"):
             terminate_session()
 
     if app_mode == "📤 Upload & Process":
