@@ -11,8 +11,12 @@ import re
 import sqlite3
 from datetime import datetime
 import numpy as np
-import pytesseract
 from pdf2image import convert_from_bytes
+
+try:
+    import pytesseract
+except Exception:
+    pytesseract = None
 
 try:
     from paddleocr import PaddleOCR
@@ -57,12 +61,6 @@ def apply_css():
                 padding: 8px 18px; border-radius: 50px; font-size: 13px !important; font-weight: 700;
                 text-transform: uppercase; letter-spacing: 1px; box-shadow: 0 4px 14px rgba(236, 72, 153, 0.4);
             }
-            div[data-testid="stMetric"] {
-                background: #ffffff !important; padding: 24px !important; border-radius: 20px !important;
-                box-shadow: 0 12px 20px -3px rgba(15, 23, 42, 0.04) !important;
-            }
-            div[data-testid="stMetricValue"] { font-size: 36px !important; font-weight: 800 !important; }
-            div[data-testid="stMetricLabel"] { font-size: 12px !important; text-transform: uppercase !important; font-weight: 700 !important; color: #64748b !important; }
             .stSidebar { background-color: #0f172a !important; }
             .sidebar-brand-box {
                 background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%) !important;
@@ -73,31 +71,9 @@ def apply_css():
                 border: 2px solid #334155 !important;
                 box-shadow: 0 6px 12px rgba(0,0,0,0.4) !important;
             }
-            .sidebar-title {
-                color: #38bdf8 !important;
-                font-size: 28px !important;
-                font-weight: 900 !important;
-                margin: 0 0 6px 0 !important;
-            }
-            .sidebar-subtitle {
-                color: #ff477e !important;
-                font-size: 14px !important;
-                font-weight: 800 !important;
-                text-transform: uppercase !important;
-                letter-spacing: 1px !important;
-                margin-bottom: 12px !important;
-            }
-            .sidebar-id-badge {
-                color: #ffffff !important;
-                font-size: 13px !important;
-                font-weight: 700 !important;
-                font-family: monospace !important;
-                background: #1e293b !important;
-                padding: 6px 12px !important;
-                border-radius: 8px !important;
-                display: inline-block !important;
-                border: 1px solid #475569 !important;
-            }
+            .sidebar-title { color: #38bdf8 !important; font-size: 28px !important; font-weight: 900 !important; margin: 0 0 6px 0 !important; }
+            .sidebar-subtitle { color: #ff477e !important; font-size: 14px !important; font-weight: 800 !important; text-transform: uppercase !important; letter-spacing: 1px !important; margin-bottom: 12px !important; }
+            .sidebar-id-badge { color: #ffffff !important; font-size: 13px !important; font-weight: 700 !important; font-family: monospace !important; background: #1e293b !important; padding: 6px 12px !important; border-radius: 8px !important; display: inline-block !important; border: 1px solid #475569 !important; }
             .stButton>button {
                 background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important;
                 color: white !important;
@@ -139,9 +115,9 @@ def insert_bill(shop, date, gst, total, calc_total, status):
             VALUES (?, ?, ?, ?, ?, ?, ?)
         """, (shop, date, gst, total, calc_total, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
         conn.commit()
-        return cursor.rowcount > 0, "saved"
-    except Exception as e:
-        return False, str(e)
+        return cursor.rowcount > 0
+    except Exception:
+        return False
     finally:
         if conn:
             conn.close()
@@ -237,6 +213,8 @@ def preprocess_for_ocr(image):
     return Image.fromarray(arr)
 
 def local_ocr_from_image(image):
+    if pytesseract is None:
+        raise RuntimeError("pytesseract not available")
     processed = preprocess_for_ocr(image)
     return pytesseract.image_to_string(processed)
 
@@ -282,6 +260,8 @@ def run_easyocr(image_or_pdf_bytes, source_type="image"):
     return "\n".join(texts)
 
 def run_tesseract(image_or_pdf_bytes, source_type="image"):
+    if pytesseract is None:
+        raise RuntimeError("pytesseract not installed")
     if source_type == "pdf":
         return local_ocr_from_pdf(image_or_pdf_bytes)
     return local_ocr_from_image(image_or_pdf_bytes)
@@ -341,7 +321,7 @@ def score_ocr_text(text):
 def merge_ocr_results(ocr_runs):
     best_text = ""
     best_score = -1
-    for engine_name, text in ocr_runs:
+    for _, text in ocr_runs:
         if not text or str(text).startswith("ERROR:"):
             continue
         score = score_ocr_text(text)
@@ -425,7 +405,7 @@ def render_bill_result(data, source_name, save_to_db=False):
     else:
         st.error(f"🛑 Audit Discrepancy Found: ₹{diff:,.2f}")
     if save_to_db:
-        saved, _ = insert_bill(shop_name, bill_date, gst_number, bill_total, calculated_total, status_txt)
+        saved = insert_bill(shop_name, bill_date, gst_number, bill_total, calculated_total, status_txt)
         if saved:
             st.toast("Saved to DB", icon="💾")
     excel_buffer = BytesIO()
