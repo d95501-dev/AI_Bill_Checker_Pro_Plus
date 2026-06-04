@@ -20,7 +20,7 @@ APP_TITLE = "Deep CSC - AI Bill Processor Premium"
 DB_PATH = "bills.db"
 DEFAULT_USERNAME = st.secrets.get("APP_USERNAME", "admin")
 DEFAULT_PASSWORD = st.secrets.get("APP_PASSWORD", "password123")
-NAPS2_PATH = r"C:\\Program Files\\NAPS2\\NAPS2.exe"
+NAPS2_PATH = r"C:\Program Files\NAPS2\NAPS2.exe"
 
 def setup_page():
     st.set_page_config(
@@ -128,9 +128,10 @@ def init_db():
     conn.close()
 
 def insert_bill(shop, date, gst, total, calc_total, status):
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
+    conn = None
     try:
+        conn = sqlite3.connect(DB_PATH, timeout=30)
+        cursor = conn.cursor()
         cursor.execute("""
             INSERT OR IGNORE INTO bills
             (shop_name, bill_date, gst_number, total, calculated_total, status, timestamp)
@@ -143,8 +144,11 @@ def insert_bill(shop, date, gst, total, calc_total, status):
         if cursor.rowcount == 0:
             return False, "Duplicate entry detected!"
         return True, "Successfully logged into DB"
+    except sqlite3.OperationalError as e:
+        return False, f"Database error: {str(e)}"
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 def init_auth():
     if "logged_in" not in st.session_state:
@@ -211,23 +215,23 @@ def parse_json_from_response(response_text):
     if not response_text:
         raise ValueError("Empty response from model")
     raw = response_text.strip().replace("```json", "").replace("```", "").strip()
-    match = re.search(r"\\{.*\\}", raw, re.DOTALL)
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
     if match:
         raw = match.group(0)
     return json.loads(raw)
 
 def analyze_bill(model, file_payload):
     prompt = """
-    Return only valid JSON with:
-    {
-      "shop_name": string or null,
-      "bill_date": string or null,
-      "gst_number": string or null,
-      "items": [{"name": string, "qty": number/string, "rate": number/string, "amount": number/string}],
-      "total": number/string or null
-    }
-    No markdown, no explanation, no extra text.
-    """
+Return only valid JSON with:
+{
+  "shop_name": string or null,
+  "bill_date": string or null,
+  "gst_number": string or null,
+  "items": [{"name": string, "qty": number/string, "rate": number/string, "amount": number/string}],
+  "total": number/string or null
+}
+No markdown, no explanation, no extra text.
+"""
     last_error = None
     for attempt in range(3):
         try:
@@ -270,13 +274,13 @@ def process_pdf_pages(model, pdf_bytes, source_name):
             })
     return results
 
-def render_bill_result(data, source_name):
+def render_bill_result(data, source_name, save_to_db=False):
     if not isinstance(data, dict):
         st.error("AI से डेटा प्राप्त नहीं हो सका।")
         return
 
-    shop_name = (data.get("shop_name") or "Unknown Shop").strip()
-    bill_date = (data.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
+    shop_name = str(data.get("shop_name") or "Unknown Shop").strip()
+    bill_date = str(data.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
     gst_number = data.get("gst_number") or "N/A"
 
     st.markdown(f"### 🏪 Vendor: `{shop_name}`")
@@ -319,11 +323,12 @@ def render_bill_result(data, source_name):
     else:
         st.error(f"🛑 Audit Discrepancy Found: Leakage variance of ₹{diff:,.2f}")
 
-    saved, db_msg = insert_bill(shop_name, bill_date, gst_number, bill_total, calculated_total, status_txt)
-    if saved:
-        st.toast(f"Saved: {db_msg}", icon="💾")
-    else:
-        st.toast(f"Skipped: {db_msg}", icon="🚨")
+    if save_to_db:
+        saved, db_msg = insert_bill(shop_name, bill_date, gst_number, bill_total, calculated_total, status_txt)
+        if saved:
+            st.toast(f"Saved: {db_msg}", icon="💾")
+        else:
+            st.toast(f"Skipped: {db_msg}", icon="🚨")
 
     st.markdown("---")
     excel_buffer = BytesIO()
@@ -392,7 +397,7 @@ def render_upload_module(model):
                 with st.spinner("AI engine parsing hardware scanner data..."):
                     try:
                         data = analyze_bill(model, image)
-                        render_bill_result(data, "naps2_scan.png")
+                        render_bill_result(data, "naps2_scan.png", save_to_db=True)
                     except Exception as e:
                         st.error(f"Structural Parsing Fault: {e}")
 
@@ -439,12 +444,35 @@ def render_upload_module(model):
 
             if results:
                 st.markdown("## ✅ Batch Results")
+
+                if st.button("💾 Save All Results to Database", key=f"save_all_{idx}", use_container_width=True):
+                    saved_count = 0
+                    for item in results:
+                        if item["data"]:
+                            data = item["data"]
+                            shop_name = str(data.get("shop_name") or "Unknown Shop").strip()
+                            bill_date = str(data.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
+                            gst_number = data.get("gst_number") or "N/A"
+                            items = normalize_items(data.get("items"))
+                            if items:
+                                tmp_df = pd.DataFrame(items)
+                                tmp_df["amount"] = pd.to_numeric(tmp_df["amount"], errors="coerce").fillna(0)
+                                calculated_total = float(tmp_df["amount"].sum())
+                            else:
+                                calculated_total = 0.0
+                            bill_total = safe_float(data.get("total", 0))
+                            status_txt = "Matched" if abs(calculated_total - bill_total) < 1 else "Mismatch"
+                            ok, _ = insert_bill(shop_name, bill_date, gst_number, bill_total, calculated_total, status_txt)
+                            if ok:
+                                saved_count += 1
+                    st.success(f"{saved_count} result(s) saved to database.")
+
                 for item in results:
                     if item["error"]:
                         st.error(f"Page {item['page']}: {item['error']}")
                     else:
                         st.markdown(f"### Page {item['page']} Result")
-                        render_bill_result(item["data"], f"{item['source']} (Page {item['page']})")
+                        render_bill_result(item["data"], f"{item['source']} (Page {item['page']})", save_to_db=False)
 
         else:
             col_img, col_act = st.columns([1, 2], gap="large")
@@ -458,7 +486,7 @@ def render_upload_module(model):
                     with st.spinner("AI engine parsing structural metadata..."):
                         try:
                             data = analyze_bill(model, image)
-                            render_bill_result(data, file.name)
+                            render_bill_result(data, file.name, save_to_db=True)
                         except Exception as e:
                             st.error(f"Structural Parsing Fault: {e}")
 
@@ -481,16 +509,13 @@ def render_hardware_module():
                         try:
                             ext = ".png" if output_format == "PNG" else ".pdf"
                             temp_scan_file = os.path.join(tempfile.gettempdir(), f"naps2_scan_{int(time.time())}{ext}")
-
                             cmd = [
                                 NAPS2_PATH,
                                 "-o", temp_scan_file,
                                 "--dpi", str(scan_dpi),
                                 "--force"
                             ]
-
                             subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=True)
-
                             if os.path.exists(temp_scan_file) and os.path.getsize(temp_scan_file) > 0:
                                 st.success("Scan Completed Successfully!")
                                 st.session_state.scanned_file_path = temp_scan_file
@@ -581,8 +606,7 @@ def render_dashboard():
     if search_query:
         filtered_df = df_db[df_db["shop_name"].astype(str).str.contains(search_query, case=False, na=False)]
 
-    display_df = filtered_df.copy()
-    st.dataframe(display_df, use_container_width=True, hide_index=True)
+    st.dataframe(filtered_df, use_container_width=True, hide_index=True)
 
 def main():
     setup_page()
