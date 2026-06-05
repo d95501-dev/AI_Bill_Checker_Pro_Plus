@@ -34,11 +34,17 @@ DEFAULT_PASSWORD = st.secrets.get("APP_PASSWORD", "password123")
 
 
 def setup_page():
-    st.set_page_config(page_title=APP_TITLE, page_icon="🧾", layout="wide", initial_sidebar_state="expanded")
+    st.set_page_config(
+        page_title=APP_TITLE,
+        page_icon="🧾",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
 
 
 def apply_css():
-    st.markdown("""
+    st.markdown(
+        """
         <style>
             .main { background-color: #f8fafc; }
             h1, h2, h3, h4 { font-family: system-ui, sans-serif !important; color: #0f172a !important; font-weight: 800 !important; }
@@ -84,13 +90,16 @@ def apply_css():
                 border: none !important;
             }
         </style>
-    """, unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
-    cursor.execute("""
+    cursor.execute(
+        """
         CREATE TABLE IF NOT EXISTS bills (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             shop_name TEXT NOT NULL,
@@ -102,7 +111,8 @@ def init_db():
             timestamp TEXT NOT NULL,
             UNIQUE(shop_name, bill_date, total)
         )
-    """)
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -111,11 +121,14 @@ def insert_bill(shop, date, gst, total, calc_total, status):
     conn = sqlite3.connect(DB_PATH, timeout=30)
     try:
         cursor = conn.cursor()
-        cursor.execute("""
+        cursor.execute(
+            """
             INSERT OR IGNORE INTO bills
             (shop_name, bill_date, gst_number, total, calculated_total, status, timestamp)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (shop, date, gst, total, calc_total, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
+            """,
+            (shop, date, gst, total, calc_total, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        )
         conn.commit()
         return cursor.rowcount > 0
     finally:
@@ -184,8 +197,8 @@ def setup_perplexity():
 def validate_gst(gst_str):
     if not gst_str:
         return False, "N/A"
-    gst_regex = r'^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$'
-    clean_gst = re.sub(r'[^A-Z0-9]', '', str(gst_str).upper())
+    gst_regex = r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$"
+    clean_gst = re.sub(r"[^A-Z0-9]", "", str(gst_str).upper())
     return bool(re.match(gst_regex, clean_gst)), clean_gst
 
 
@@ -195,12 +208,14 @@ def normalize_items(items):
         return cleaned
     for it in items:
         if isinstance(it, dict):
-            cleaned.append({
-                "name": it.get("name") or "",
-                "qty": it.get("qty") or "",
-                "rate": it.get("rate") or "",
-                "amount": it.get("amount") or ""
-            })
+            cleaned.append(
+                {
+                    "name": it.get("name") or "",
+                    "qty": it.get("qty") or "",
+                    "rate": it.get("rate") or "",
+                    "amount": it.get("amount") or "",
+                }
+            )
     return cleaned
 
 
@@ -268,12 +283,15 @@ def analyze_openai(client, image):
         model=st.secrets.get("OPENAI_MODEL", "gpt-4o-mini"),
         messages=[
             {"role": "system", "content": build_schema_prompt()},
-            {"role": "user", "content": [
-                {"type": "text", "text": "Extract invoice JSON from this image."},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
-            ]}
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Extract invoice JSON from this image."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ],
+            },
         ],
-        response_format={"type": "json_object"}
+        response_format={"type": "json_object"},
     )
     return parse_json_from_response(resp.choices[0].message.content)
 
@@ -290,10 +308,13 @@ def analyze_perplexity(api_key, image):
         "model": st.secrets.get("PERPLEXITY_MODEL", "sonar-pro"),
         "messages": [
             {"role": "system", "content": build_schema_prompt()},
-            {"role": "user", "content": [
-                {"type": "text", "text": "Extract invoice JSON from this image."},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}
-            ]}
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Extract invoice JSON from this image."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ],
+            },
         ],
         "response_format": {
             "type": "json_schema",
@@ -313,18 +334,18 @@ def analyze_perplexity(api_key, image):
                                     "name": {"type": "string"},
                                     "qty": {"type": "string"},
                                     "rate": {"type": "string"},
-                                    "amount": {"type": "string"}
+                                    "amount": {"type": "string"},
                                 },
-                                "required": ["name", "qty", "rate", "amount"]
-                            }
+                                "required": ["name", "qty", "rate", "amount"],
+                            },
                         },
-                        "total": {"type": ["string", "null"]}
+                        "total": {"type": ["string", "null"]},
                     },
-                    "required": ["shop_name", "bill_date", "gst_number", "items", "total"]
-                }
-            }
+                    "required": ["shop_name", "bill_date", "gst_number", "items", "total"],
+                },
+            },
         },
-        "temperature": 0.0
+        "temperature": 0.0,
     }
     r = requests.post(url, headers=headers, json=payload, timeout=120)
     r.raise_for_status()
@@ -366,6 +387,53 @@ def analyze_with_auto_fallback(model_bundle, image):
     raise RuntimeError(f"All providers failed: {last_err}")
 
 
+def _export_payload(df, base_name, widget_key):
+    try:
+        buffer = BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Data")
+        return st.download_button(
+            "📥 Export Excel Data Sheets",
+            data=buffer.getvalue(),
+            file_name=f"{base_name}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key=f"excel_{widget_key}",
+        )
+    except ModuleNotFoundError:
+        csv_data = df.to_csv(index=False).encode("utf-8")
+        return st.download_button(
+            "📥 Download CSV Instead",
+            data=csv_data,
+            file_name=f"{base_name}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key=f"csv_{widget_key}",
+        )
+
+
+def _export_pdf(shop_name, bill_date, gst_number, bill_total, widget_key):
+    pdf_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    doc = SimpleDocTemplate(pdf_temp.name)
+    styles = getSampleStyleSheet()
+    elements = [
+        Paragraph(f"Invoice Summary: {shop_name}", styles["Title"]),
+        Spacer(1, 10),
+        Paragraph(f"Date: {bill_date} | GSTIN: {gst_number}", styles["Normal"]),
+        Paragraph(f"Verified Final Amount: INR {bill_total:.2f}", styles["Heading3"]),
+    ]
+    doc.build(elements)
+    with open(pdf_temp.name, "rb") as f:
+        return st.download_button(
+            "📄 Download Sign-off PDF",
+            f.read(),
+            file_name=f"{re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)}_receipt.pdf",
+            mime="application/pdf",
+            use_container_width=True,
+            key=f"pdf_{widget_key}",
+        )
+
+
 def render_bill_result(data, source_name, save_to_db=False):
     if not isinstance(data, dict):
         st.error("AI se data nahi mil paaya.")
@@ -374,11 +442,14 @@ def render_bill_result(data, source_name, save_to_db=False):
     shop_name = str(data.get("shop_name") or "Unknown Shop").strip()
     bill_date = str(data.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
     gst_number = data.get("gst_number") or "N/A"
+    safe_shop = re.sub(r"[^A-Za-z0-9_-]+", "_", shop_name)
+    safe_source = re.sub(r"[^A-Za-z0-9_-]+", "_", str(source_name))
 
     st.markdown(f"### 🏪 Vendor: `{shop_name}`")
     c1, c2 = st.columns(2)
     c1.markdown(f"**🗓️ Declared Invoice Date:** {bill_date}")
     is_valid_gst, formatted_gst = validate_gst(gst_number)
+
     if gst_number != "N/A" and is_valid_gst:
         c2.markdown(f"**🛡️ GSTIN Registry Validation:** :green[✅ Valid - {formatted_gst}]")
     elif gst_number != "N/A":
@@ -417,47 +488,8 @@ def render_bill_result(data, source_name, save_to_db=False):
         if saved:
             st.toast("Saved to DB", icon="💾")
 
-    excel_buffer = BytesIO()
-    try:
-        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False, sheet_name="Parsed Invoice Data")
-        safe_shop = re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)
-        st.download_button(
-            "📥 Export Excel Data Sheets",
-            data=excel_buffer.getvalue(),
-            file_name=f"{safe_shop}_ledger.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-        )
-    except ModuleNotFoundError:
-        csv_data = df.to_csv(index=False).encode("utf-8")
-        safe_shop = re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)
-        st.download_button(
-            "📥 Download CSV Instead",
-            data=csv_data,
-            file_name=f"{safe_shop}_ledger.csv",
-            mime="text/csv",
-            use_container_width=True,
-        )
-
-    pdf_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-    doc = SimpleDocTemplate(pdf_temp.name)
-    styles = getSampleStyleSheet()
-    elements = [
-        Paragraph(f"Invoice Summary: {shop_name}", styles["Title"]),
-        Spacer(1, 10),
-        Paragraph(f"Date: {bill_date} | GSTIN: {gst_number}", styles["Normal"]),
-        Paragraph(f"Verified Final Amount: INR {bill_total:.2f}", styles["Heading3"])
-    ]
-    doc.build(elements)
-    with open(pdf_temp.name, "rb") as f:
-        st.download_button(
-            "📄 Download Sign-off PDF",
-            f.read(),
-            file_name=f"{re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)}_receipt.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-        )
+    _export_payload(df, safe_shop + "_ledger", safe_source)
+    _export_pdf(shop_name, bill_date, gst_number, bill_total, safe_source)
 
 
 def build_batch_summary(results):
@@ -469,38 +501,45 @@ def build_batch_summary(results):
             bill_date = str(data.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
             gst_number = data.get("gst_number") or "N/A"
             items = normalize_items(data.get("items"))
+
             if items:
                 tmp_df = pd.DataFrame(items)
                 tmp_df["amount"] = pd.to_numeric(tmp_df["amount"], errors="coerce").fillna(0)
                 calculated_total = float(tmp_df["amount"].sum())
             else:
                 calculated_total = 0.0
+
             bill_total = safe_float(data.get("total", 0))
             diff = abs(calculated_total - bill_total)
             status_txt = "Matched" if diff < 1 else "Mismatch"
-            rows.append({
-                "page": item.get("page"),
-                "source": item.get("source"),
-                "shop_name": shop_name,
-                "bill_date": bill_date,
-                "gst_number": gst_number,
-                "bill_total": bill_total,
-                "calculated_total": calculated_total,
-                "difference": diff,
-                "status": status_txt
-            })
+
+            rows.append(
+                {
+                    "page": item.get("page"),
+                    "source": item.get("source"),
+                    "shop_name": shop_name,
+                    "bill_date": bill_date,
+                    "gst_number": gst_number,
+                    "bill_total": bill_total,
+                    "calculated_total": calculated_total,
+                    "difference": diff,
+                    "status": status_txt,
+                }
+            )
         else:
-            rows.append({
-                "page": item.get("page"),
-                "source": item.get("source"),
-                "shop_name": None,
-                "bill_date": None,
-                "gst_number": None,
-                "bill_total": None,
-                "calculated_total": None,
-                "difference": None,
-                "status": f"Error: {item.get('error')}"
-            })
+            rows.append(
+                {
+                    "page": item.get("page"),
+                    "source": item.get("source"),
+                    "shop_name": None,
+                    "bill_date": None,
+                    "gst_number": None,
+                    "bill_total": None,
+                    "calculated_total": None,
+                    "difference": None,
+                    "status": f"Error: {item.get('error')}",
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -509,10 +548,24 @@ def make_excel_download(df, filename, label="📥 Download Excel", key="excel_do
         buffer = BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name="Batch Summary")
-        st.download_button(label, data=buffer.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key=key)
+        st.download_button(
+            label,
+            data=buffer.getvalue(),
+            file_name=filename,
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key=key,
+        )
     except ModuleNotFoundError:
         csv_data = df.to_csv(index=False).encode("utf-8")
-        st.download_button("📥 Download CSV Instead", data=csv_data, file_name=filename.replace(".xlsx", ".csv"), mime="text/csv", use_container_width=True, key=key + "_csv")
+        st.download_button(
+            "📥 Download CSV Instead",
+            data=csv_data,
+            file_name=filename.replace(".xlsx", ".csv"),
+            mime="text/csv",
+            use_container_width=True,
+            key=key + "_csv",
+        )
 
 
 def process_pdf_pages(model_bundle, pdf_bytes, source_name):
@@ -532,11 +585,16 @@ def process_pdf_pages(model_bundle, pdf_bytes, source_name):
 def render_upload_module(model_bundle):
     st.markdown(
         '<div class="deep-csc-header"><div class="branding-text"><h1>🧾 AI Multi-Bill OCR Processor</h1><p style="color: #94a3b8; margin: 5px 0 0 0;">Automated structural data parsing pipeline powered by multiple providers.</p></div><div class="csc-meta-badge">📍 <b>Deep Digital Seva Kendra</b><br>👤 Owner: Deepak | ID: 256423250015</div><div class="branding-badge">Deep CSC AI</div></div>',
-        unsafe_allow_html=True
+        unsafe_allow_html=True,
     )
 
     providers = ["Gemini", "OpenAI", "Perplexity"]
-    provider = st.selectbox("Choose provider", providers, index=providers.index(st.session_state.selected_provider), key="provider_select")
+    provider = st.selectbox(
+        "Choose provider",
+        providers,
+        index=providers.index(st.session_state.selected_provider),
+        key="provider_select",
+    )
     st.session_state.selected_provider = provider
 
     if st.button("🔄 Retry Gemini Now", key="retry_gemini", use_container_width=True):
@@ -548,7 +606,7 @@ def render_upload_module(model_bundle):
     uploaded_files = st.file_uploader(
         "Drop batch bill images or PDF files below (Multi-upload supported)",
         type=["jpg", "jpeg", "png", "pdf"],
-        accept_multiple_files=True
+        accept_multiple_files=True,
     )
     if not uploaded_files:
         return
@@ -587,7 +645,12 @@ def render_upload_module(model_bundle):
                 st.markdown("## 📋 Page-wise Consolidated Summary")
                 summary_df = build_batch_summary(results)
                 st.dataframe(summary_df, use_container_width=True, hide_index=True)
-                make_excel_download(summary_df, f"{file.name}_page_wise_summary.xlsx", label="📥 Download Batch Excel", key=f"batch_excel_{idx}")
+                make_excel_download(
+                    summary_df,
+                    f"{file.name}_page_wise_summary.xlsx",
+                    label="📥 Download Batch Excel",
+                    key=f"batch_excel_{idx}",
+                )
 
                 st.markdown("## ✅ Batch Results")
                 for item in results:
@@ -595,8 +658,11 @@ def render_upload_module(model_bundle):
                         st.error(f"Page {item['page']}: {item['error']}")
                     else:
                         st.markdown(f"### Page {item['page']} Result")
-                        render_bill_result(item["data"], f"{item['source']} (Page {item['page']})", save_to_db=False)
-
+                        render_bill_result(
+                            item["data"],
+                            f"{item['source']} (Page {item['page']})",
+                            save_to_db=False,
+                        )
         else:
             col_img, col_act = st.columns([1, 2], gap="large")
             with col_img:
@@ -629,16 +695,25 @@ def main():
         do_login()
 
     with st.sidebar:
-        st.markdown("""
+        st.markdown(
+            """
             <div class="sidebar-brand-box">
                 <div class="sidebar-title">Deep CSC</div>
                 <div class="sidebar-subtitle">Deep Digital Seva Kendra</div>
                 <div class="sidebar-id-badge">ID: 256423250015</div>
             </div>
-        """, unsafe_allow_html=True)
+            """,
+            unsafe_allow_html=True,
+        )
 
-        st.markdown(f"<p style='color:#cbd5e1; font-size:14px; margin-left:5px;'>Operator: <b style='color:#38bdf8;'>{DEFAULT_USERNAME} (Deepak)</b></p>", unsafe_allow_html=True)
-        st.markdown(f"<p style='color:#cbd5e1; font-size:13px; margin-left:5px;'>Gemini state: <b>{'Available' if st.session_state.gemini_available else 'Fallback mode'}</b></p>", unsafe_allow_html=True)
+        st.markdown(
+            f"<p style='color:#cbd5e1; font-size:14px; margin-left:5px;'>Operator: <b style='color:#38bdf8;'>{DEFAULT_USERNAME} (Deepak)</b></p>",
+            unsafe_allow_html=True,
+        )
+        st.markdown(
+            f"<p style='color:#cbd5e1; font-size:13px; margin-left:5px;'>Gemini state: <b>{'Available' if st.session_state.gemini_available else 'Fallback mode'}</b></p>",
+            unsafe_allow_html=True,
+        )
         st.selectbox("Navigate System", ["📤 Upload & Process"], key="app_mode")
         st.markdown("<br><br><hr style='border-color: #1e293b;'>", unsafe_allow_html=True)
         if st.button("🚪 Terminate Session", use_container_width=True, key="terminate_session"):
