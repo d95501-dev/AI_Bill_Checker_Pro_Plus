@@ -12,6 +12,12 @@ import sqlite3
 from datetime import datetime
 import base64
 
+# ✅ ADDED: Missing pdf2image import
+try:
+    from pdf2image import convert_from_bytes
+except ImportError:
+    convert_from_bytes = None
+
 try:
     from openai import OpenAI
 except Exception:
@@ -449,158 +455,4 @@ def build_batch_summary(results):
             diff = abs(calculated_total - bill_total)
             status_txt = "Matched" if diff < 1 else "Mismatch"
             rows.append({
-                "page": item.get("page"),
-                "source": item.get("source"),
-                "shop_name": shop_name,
-                "bill_date": bill_date,
-                "gst_number": gst_number,
-                "bill_total": bill_total,
-                "calculated_total": calculated_total,
-                "difference": diff,
-                "status": status_txt
-            })
-        else:
-            rows.append({
-                "page": item.get("page"),
-                "source": item.get("source"),
-                "shop_name": None,
-                "bill_date": None,
-                "gst_number": None,
-                "bill_total": None,
-                "calculated_total": None,
-                "difference": None,
-                "status": f"Error: {item.get('error')}"
-            })
-    return pd.DataFrame(rows)
-
-def make_excel_download(df, filename, label="📥 Download Excel", key="excel_download"):
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Batch Summary")
-    st.download_button(label, data=buffer.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key=key)
-
-def process_pdf_pages(model_bundle, pdf_bytes, source_name):
-    results = []
-    pages = convert_from_bytes(pdf_bytes, dpi=300)
-    for p_idx, page_img in enumerate(pages, start=1):
-        try:
-            data = analyze_with_auto_fallback(model_bundle, page_img)
-            results.append({"page": p_idx, "source": source_name, "data": data, "error": None})
-        except Exception as e:
-            results.append({"page": p_idx, "source": source_name, "data": None, "error": str(e)})
-    return results
-
-def render_upload_module(model_bundle):
-    st.markdown(
-        '<div class="deep-csc-header"><div class="branding-text"><h1>🧾 AI Multi-Bill OCR Processor</h1><p style="color: #94a3b8; margin: 5px 0 0 0;">Automated structural data parsing pipeline powered by multiple providers.</p></div><div class="csc-meta-badge">📍 <b>Deep Digital Seva Kendra</b><br>👤 Owner: Deepak | ID: 256423250015</div><div class="branding-badge">Deep CSC AI</div></div>',
-        unsafe_allow_html=True
-    )
-
-    providers = ["Gemini", "OpenAI", "Perplexity"]
-    provider = st.selectbox("Choose provider", providers, index=providers.index(st.session_state.selected_provider), key="provider_select")
-    st.session_state.selected_provider = provider
-
-    if st.button("🔄 Retry Gemini Now", key="retry_gemini", use_container_width=True):
-        st.session_state.gemini_available = True
-        st.session_state.last_gemini_error_time = None
-        st.session_state.gemini_retry_count = 0
-        st.success("Gemini retry enabled. Next request will try Gemini first.")
-
-    uploaded_files = st.file_uploader(
-        "Drop batch bill images or PDF files below (Multi-upload supported)",
-        type=["jpg", "jpeg", "png", "pdf"],
-        accept_multiple_files=True
-    )
-    if not uploaded_files:
-        return
-
-    for idx, file in enumerate(uploaded_files):
-        st.markdown("---")
-        st.subheader(f"📄 Processing Block [{idx + 1}]: {file.name}")
-        is_pdf = file.name.lower().endswith(".pdf")
-
-        if is_pdf:
-            pdf_bytes = file.getvalue()
-            try:
-                pages = convert_from_bytes(pdf_bytes, dpi=300)
-            except Exception as e:
-                st.error(f"PDF parsing error: {e}")
-                continue
-
-            st.info(f"📁 PDF Document Detected — {len(pages)} page(s) found")
-
-            if st.button("⚡ Process All Pages", key=f"process_all_{idx}", use_container_width=True):
-                with st.spinner("Processing all PDF pages..."):
-                    st.session_state.batch_results[file.name] = process_pdf_pages(model_bundle, pdf_bytes, file.name)
-                st.success("All pages processed successfully!")
-
-            results = st.session_state.batch_results.get(file.name, [])
-
-            for p_idx, page_img in enumerate(pages, start=1):
-                st.markdown(f"### 📄 Page {p_idx}")
-                st.image(page_img, caption=f"{file.name} - Page {p_idx}", use_container_width=True)
-
-            if results:
-                st.markdown("## 📋 Page-wise Consolidated Summary")
-                summary_df = build_batch_summary(results)
-                st.dataframe(summary_df, use_container_width=True, hide_index=True)
-                make_excel_download(summary_df, f"{file.name}_page_wise_summary.xlsx", label="📥 Download Batch Excel", key=f"batch_excel_{idx}")
-
-                st.markdown("## ✅ Batch Results")
-                for item in results:
-                    if item["error"]:
-                        st.error(f"Page {item['page']}: {item['error']}")
-                    else:
-                        st.markdown(f"### Page {item['page']} Result")
-                        render_bill_result(item["data"], f"{item['source']} (Page {item['page']})", save_to_db=False)
-
-        else:
-            col_img, col_act = st.columns([1, 2], gap="large")
-            with col_img:
-                image = Image.open(BytesIO(file.getvalue())).convert("RGB")
-                st.image(image, caption=f"Source: {file.name}", use_container_width=True)
-            with col_act:
-                if st.button("⚡ Execute AI Analysis", key=f"btn_{idx}", use_container_width=True):
-                    with st.spinner("AI engine parsing structural metadata..."):
-                        try:
-                            data = analyze_with_auto_fallback(model_bundle, image)
-                            render_bill_result(data, file.name, save_to_db=True)
-                        except Exception as e:
-                            st.error(f"Structural Parsing Fault: {e}")
-
-def main():
-    setup_page()
-    apply_css()
-    init_db()
-    init_auth()
-    init_runtime_state()
-
-    model_bundle = {
-        "gemini": setup_gemini(),
-        "openai": setup_openai(),
-        "perplexity": setup_perplexity(),
-    }
-
-    if not st.session_state.logged_in:
-        do_login()
-
-    with st.sidebar:
-        st.markdown("""
-            <div class="sidebar-brand-box">
-                <div class="sidebar-title">Deep CSC</div>
-                <div class="sidebar-subtitle">Deep Digital Seva Kendra</div>
-                <div class="sidebar-id-badge">ID: 256423250015</div>
-            </div>
-        """, unsafe_allow_html=True)
-
-        st.markdown(f"<p style='color:#cbd5e1; font-size:14px; margin-left:5px;'>Operator: <b style='color:#38bdf8;'>{DEFAULT_USERNAME} (Deepak)</b></p>", unsafe_allow_html=True)
-        st.markdown(f"<p style='color:#cbd5e1; font-size:13px; margin-left:5px;'>Gemini state: <b>{'Available' if st.session_state.gemini_available else 'Fallback mode'}</b></p>", unsafe_allow_html=True)
-        st.selectbox("Navigate System", ["📤 Upload & Process"], key="app_mode")
-        st.markdown("<br><br><hr style='border-color: #1e293b;'>", unsafe_allow_html=True)
-        if st.button("🚪 Terminate Session", use_container_width=True, key="terminate_session"):
-            terminate_session()
-
-    render_upload_module(model_bundle)
-
-if __name__ == "__main__":
-    main()
+                "page": 
