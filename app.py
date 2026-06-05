@@ -1,16 +1,17 @@
-import streamlit as st
-import google.generativeai as genai
-from PIL import Image
-import pandas as pd
-from io import BytesIO
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
-import tempfile
+import base64
 import json
 import re
 import sqlite3
+import tempfile
 from datetime import datetime
-import base64
+from io import BytesIO
+
+import google.generativeai as genai
+import pandas as pd
+import streamlit as st
+from PIL import Image
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
 try:
     from pdf2image import convert_from_bytes
@@ -26,6 +27,7 @@ try:
     import requests
 except Exception:
     requests = None
+
 
 APP_TITLE = "Deep CSC - AI Bill Processor Premium"
 DB_PATH = "bills.db"
@@ -96,43 +98,22 @@ def apply_css():
 
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS bills (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            shop_name TEXT NOT NULL,
-            bill_date TEXT NOT NULL,
-            gst_number TEXT,
-            total REAL NOT NULL,
-            calculated_total REAL NOT NULL,
-            status TEXT NOT NULL,
-            timestamp TEXT NOT NULL,
-            UNIQUE(shop_name, bill_date, total)
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
-
-
-def insert_bill(shop, date, gst, total, calc_total, status):
-    conn = sqlite3.connect(DB_PATH, timeout=30)
-    try:
-        cursor = conn.cursor()
-        cursor.execute(
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
             """
-            INSERT OR IGNORE INTO bills
-            (shop_name, bill_date, gst_number, total, calculated_total, status, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (shop, date, gst, total, calc_total, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+            CREATE TABLE IF NOT EXISTS bills (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                shop_name TEXT NOT NULL,
+                bill_date TEXT NOT NULL,
+                gst_number TEXT,
+                total REAL NOT NULL,
+                calculated_total REAL NOT NULL,
+                status TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                UNIQUE(shop_name, bill_date, total)
+            )
+            """
         )
-        conn.commit()
-        return cursor.rowcount > 0
-    finally:
-        conn.close()
 
 
 def init_auth():
@@ -148,6 +129,7 @@ def init_runtime_state():
         "gemini_cooldown_seconds": 900,
         "gemini_retry_count": 0,
         "batch_results": {},
+        "perplexity_enabled": True,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -176,22 +158,25 @@ def terminate_session():
 
 
 def setup_gemini():
-    api_key = st.secrets.get("GEMINI_API_KEY", "")
-    if not api_key:
+    api_key = st.secrets.get("GEMINI_API_KEY", "").strip()
+    if not api_key or "your_" in api_key.lower():
         return None
     genai.configure(api_key=api_key)
     return genai.GenerativeModel("gemini-2.5-flash")
 
 
 def setup_openai():
-    api_key = st.secrets.get("OPENAI_API_KEY", "")
-    if not api_key or OpenAI is None:
+    api_key = st.secrets.get("OPENAI_API_KEY", "").strip()
+    if not api_key or OpenAI is None or "your_" in api_key.lower():
         return None
     return OpenAI(api_key=api_key)
 
 
 def setup_perplexity():
-    return st.secrets.get("PERPLEXITY_API_KEY", "")
+    api_key = st.secrets.get("PERPLEXITY_API_KEY", "").strip()
+    if not api_key or "your_" in api_key.lower():
+        return "", False
+    return api_key, True
 
 
 def validate_gst(gst_str):
@@ -354,7 +339,10 @@ def analyze_perplexity(api_key, image):
 
 def analyze_with_auto_fallback(model_bundle, image):
     provider = st.session_state.get("selected_provider", "Gemini")
-    order = [provider, "Gemini", "OpenAI", "Perplexity"]
+    order = [provider, "Gemini", "OpenAI"]
+    if model_bundle.get("perplexity_enabled") and model_bundle.get("perplexity_key"):
+        order.append("Perplexity")
+
     seen = set()
     last_err = None
 
@@ -370,29 +358,38 @@ def analyze_with_auto_fallback(model_bundle, image):
                     st.session_state.last_gemini_error_time = None
                     st.session_state.gemini_retry_count = 0
                     return result
+
             elif p == "OpenAI" and model_bundle.get("openai"):
                 return analyze_openai(model_bundle["openai"], image)
-            elif p == "Perplexity" and model_bundle.get("perplexity"):
-                return analyze_perplexity(model_bundle["perplexity"], image)
+
+            elif p == "Perplexity" and model_bundle.get("perplexity_enabled") and model_bundle.get("perplexity_key"):
+                return analyze_perplexity(model_bundle["perplexity_key"], image)
+
         except Exception as e:
             last_err = e
             msg = str(e).lower()
+
             if p == "Gemini" and ("429" in msg or "quota" in msg or "rate limit" in msg):
                 st.session_state.gemini_available = False
                 st.session_state.last_gemini_error_time = datetime.now()
                 st.session_state.gemini_retry_count += 1
                 st.warning("Gemini quota exhausted. Switching to next provider.")
-            continue
+                continue
+
+            if p == "Perplexity" and ("401" in msg or "unauthorized" in msg or "authentication" in msg):
+                st.session_state.perplexity_enabled = False
+                st.warning("Perplexity auth failed. Skipping Perplexity for this session.")
+                continue
 
     raise RuntimeError(f"All providers failed: {last_err}")
 
 
-def _export_payload(df, base_name, widget_key):
+def export_payload(df, base_name, widget_key):
     try:
         buffer = BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name="Data")
-        return st.download_button(
+        st.download_button(
             "📥 Export Excel Data Sheets",
             data=buffer.getvalue(),
             file_name=f"{base_name}.xlsx",
@@ -400,9 +397,9 @@ def _export_payload(df, base_name, widget_key):
             use_container_width=True,
             key=f"excel_{widget_key}",
         )
-    except ModuleNotFoundError:
+    except Exception:
         csv_data = df.to_csv(index=False).encode("utf-8")
-        return st.download_button(
+        st.download_button(
             "📥 Download CSV Instead",
             data=csv_data,
             file_name=f"{base_name}.csv",
@@ -412,7 +409,7 @@ def _export_payload(df, base_name, widget_key):
         )
 
 
-def _export_pdf(shop_name, bill_date, gst_number, bill_total, widget_key):
+def export_pdf(shop_name, bill_date, gst_number, bill_total, widget_key):
     pdf_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     doc = SimpleDocTemplate(pdf_temp.name)
     styles = getSampleStyleSheet()
@@ -424,7 +421,7 @@ def _export_pdf(shop_name, bill_date, gst_number, bill_total, widget_key):
     ]
     doc.build(elements)
     with open(pdf_temp.name, "rb") as f:
-        return st.download_button(
+        st.download_button(
             "📄 Download Sign-off PDF",
             f.read(),
             file_name=f"{re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)}_receipt.pdf",
@@ -448,8 +445,8 @@ def render_bill_result(data, source_name, save_to_db=False):
     st.markdown(f"### 🏪 Vendor: `{shop_name}`")
     c1, c2 = st.columns(2)
     c1.markdown(f"**🗓️ Declared Invoice Date:** {bill_date}")
-    is_valid_gst, formatted_gst = validate_gst(gst_number)
 
+    is_valid_gst, formatted_gst = validate_gst(gst_number)
     if gst_number != "N/A" and is_valid_gst:
         c2.markdown(f"**🛡️ GSTIN Registry Validation:** :green[✅ Valid - {formatted_gst}]")
     elif gst_number != "N/A":
@@ -488,42 +485,50 @@ def render_bill_result(data, source_name, save_to_db=False):
         if saved:
             st.toast("Saved to DB", icon="💾")
 
-    _export_payload(df, safe_shop + "_ledger", safe_source)
-    _export_pdf(shop_name, bill_date, gst_number, bill_total, safe_source)
+    export_payload(df, safe_shop + "_ledger", safe_source)
+    export_pdf(shop_name, bill_date, gst_number, bill_total, safe_source)
+
+
+def insert_bill(shop, date, gst, total, calc_total, status):
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT OR IGNORE INTO bills
+            (shop_name, bill_date, gst_number, total, calculated_total, status, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (shop, date, gst, total, calc_total, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        conn.commit()
+        return cur.rowcount > 0
 
 
 def build_batch_summary(results):
     rows = []
     for item in results:
         if item.get("data"):
-            data = item["data"]
-            shop_name = str(data.get("shop_name") or "Unknown Shop").strip()
-            bill_date = str(data.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
-            gst_number = data.get("gst_number") or "N/A"
-            items = normalize_items(data.get("items"))
-
-            if items:
-                tmp_df = pd.DataFrame(items)
+            d = item["data"]
+            df = normalize_items(d.get("items"))
+            tmp_df = pd.DataFrame(df)
+            if not tmp_df.empty:
                 tmp_df["amount"] = pd.to_numeric(tmp_df["amount"], errors="coerce").fillna(0)
-                calculated_total = float(tmp_df["amount"].sum())
+                calc_total = float(tmp_df["amount"].sum())
             else:
-                calculated_total = 0.0
+                calc_total = 0.0
 
-            bill_total = safe_float(data.get("total", 0))
-            diff = abs(calculated_total - bill_total)
-            status_txt = "Matched" if diff < 1 else "Mismatch"
-
+            total = safe_float(d.get("total", 0))
             rows.append(
                 {
                     "page": item.get("page"),
                     "source": item.get("source"),
-                    "shop_name": shop_name,
-                    "bill_date": bill_date,
-                    "gst_number": gst_number,
-                    "bill_total": bill_total,
-                    "calculated_total": calculated_total,
-                    "difference": diff,
-                    "status": status_txt,
+                    "shop_name": str(d.get("shop_name") or "Unknown Shop").strip(),
+                    "bill_date": str(d.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip(),
+                    "gst_number": d.get("gst_number") or "N/A",
+                    "bill_total": total,
+                    "calculated_total": calc_total,
+                    "difference": abs(calc_total - total),
+                    "status": "Matched" if abs(calc_total - total) < 1 else "Mismatch",
                 }
             )
         else:
@@ -556,7 +561,7 @@ def make_excel_download(df, filename, label="📥 Download Excel", key="excel_do
             use_container_width=True,
             key=key,
         )
-    except ModuleNotFoundError:
+    except Exception:
         csv_data = df.to_csv(index=False).encode("utf-8")
         st.download_button(
             "📥 Download CSV Instead",
@@ -588,11 +593,14 @@ def render_upload_module(model_bundle):
         unsafe_allow_html=True,
     )
 
-    providers = ["Gemini", "OpenAI", "Perplexity"]
+    providers = ["Gemini", "OpenAI"]
+    if st.session_state.get("perplexity_enabled", False) and model_bundle.get("perplexity_key"):
+        providers.append("Perplexity")
+
     provider = st.selectbox(
         "Choose provider",
         providers,
-        index=providers.index(st.session_state.selected_provider),
+        index=providers.index(st.session_state.selected_provider) if st.session_state.selected_provider in providers else 0,
         key="provider_select",
     )
     st.session_state.selected_provider = provider
@@ -688,8 +696,10 @@ def main():
     model_bundle = {
         "gemini": setup_gemini(),
         "openai": setup_openai(),
-        "perplexity": setup_perplexity(),
     }
+    perplexity_key, perplexity_enabled = setup_perplexity()
+    model_bundle["perplexity_key"] = perplexity_key
+    model_bundle["perplexity_enabled"] = perplexity_enabled
 
     if not st.session_state.logged_in:
         do_login()
