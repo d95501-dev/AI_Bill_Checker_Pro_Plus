@@ -32,13 +32,10 @@ DB_PATH = "bills.db"
 DEFAULT_USERNAME = st.secrets.get("APP_USERNAME", "admin")
 DEFAULT_PASSWORD = st.secrets.get("APP_PASSWORD", "password123")
 
+
 def setup_page():
-    st.set_page_config(
-        page_title=APP_TITLE,
-        page_icon="🧾",
-        layout="wide",
-        initial_sidebar_state="expanded",
-    )
+    st.set_page_config(page_title=APP_TITLE, page_icon="🧾", layout="wide", initial_sidebar_state="expanded")
+
 
 def apply_css():
     st.markdown("""
@@ -89,6 +86,7 @@ def apply_css():
         </style>
     """, unsafe_allow_html=True)
 
+
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -108,6 +106,7 @@ def init_db():
     conn.commit()
     conn.close()
 
+
 def insert_bill(shop, date, gst, total, calc_total, status):
     conn = sqlite3.connect(DB_PATH, timeout=30)
     try:
@@ -122,9 +121,11 @@ def insert_bill(shop, date, gst, total, calc_total, status):
     finally:
         conn.close()
 
+
 def init_auth():
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
+
 
 def init_runtime_state():
     defaults = {
@@ -139,6 +140,7 @@ def init_runtime_state():
         if k not in st.session_state:
             st.session_state[k] = v
 
+
 def do_login():
     st.title("🔐 System Login Proxy")
     username = st.text_input("Username")
@@ -151,12 +153,14 @@ def do_login():
             st.error("Invalid Username or Password Credentials")
     st.stop()
 
+
 def terminate_session():
     st.session_state.logged_in = False
     for k in list(st.session_state.keys()):
         if k != "logged_in":
             del st.session_state[k]
     st.rerun()
+
 
 def setup_gemini():
     api_key = st.secrets.get("GEMINI_API_KEY", "")
@@ -165,14 +169,17 @@ def setup_gemini():
     genai.configure(api_key=api_key)
     return genai.GenerativeModel("gemini-2.5-flash")
 
+
 def setup_openai():
     api_key = st.secrets.get("OPENAI_API_KEY", "")
     if not api_key or OpenAI is None:
         return None
     return OpenAI(api_key=api_key)
 
+
 def setup_perplexity():
     return st.secrets.get("PERPLEXITY_API_KEY", "")
+
 
 def validate_gst(gst_str):
     if not gst_str:
@@ -180,6 +187,7 @@ def validate_gst(gst_str):
     gst_regex = r'^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$'
     clean_gst = re.sub(r'[^A-Z0-9]', '', str(gst_str).upper())
     return bool(re.match(gst_regex, clean_gst)), clean_gst
+
 
 def normalize_items(items):
     cleaned = []
@@ -195,6 +203,7 @@ def normalize_items(items):
             })
     return cleaned
 
+
 def parse_json_from_response(response_text):
     if not response_text:
         raise ValueError("Empty response from model")
@@ -204,11 +213,13 @@ def parse_json_from_response(response_text):
         raw = match.group(0)
     return json.loads(raw)
 
+
 def safe_float(value):
     try:
         return float(str(value).replace(",", "").strip())
     except Exception:
         return 0.0
+
 
 def can_try_gemini():
     if st.session_state.get("gemini_available", True):
@@ -218,6 +229,7 @@ def can_try_gemini():
         return True
     cooldown = st.session_state.get("gemini_cooldown_seconds", 900)
     return (datetime.now() - last_error).total_seconds() >= cooldown
+
 
 def build_schema_prompt():
     return """
@@ -240,9 +252,11 @@ Rules:
 - Do not wrap in markdown.
 """
 
+
 def analyze_gemini(model, image):
     response = model.generate_content([build_schema_prompt(), image])
     return parse_json_from_response(getattr(response, "text", ""))
+
 
 def analyze_openai(client, image):
     if client is None:
@@ -262,6 +276,7 @@ def analyze_openai(client, image):
         response_format={"type": "json_object"}
     )
     return parse_json_from_response(resp.choices[0].message.content)
+
 
 def analyze_perplexity(api_key, image):
     if not api_key or requests is None:
@@ -315,6 +330,7 @@ def analyze_perplexity(api_key, image):
     r.raise_for_status()
     return parse_json_from_response(r.json()["choices"][0]["message"]["content"])
 
+
 def analyze_with_auto_fallback(model_bundle, image):
     provider = st.session_state.get("selected_provider", "Gemini")
     order = [provider, "Gemini", "OpenAI", "Perplexity"]
@@ -348,6 +364,7 @@ def analyze_with_auto_fallback(model_bundle, image):
             continue
 
     raise RuntimeError(f"All providers failed: {last_err}")
+
 
 def render_bill_result(data, source_name, save_to_db=False):
     if not isinstance(data, dict):
@@ -401,19 +418,27 @@ def render_bill_result(data, source_name, save_to_db=False):
             st.toast("Saved to DB", icon="💾")
 
     excel_buffer = BytesIO()
-    with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Parsed Invoice Data")
-
-    safe_shop = re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)
-    safe_source = re.sub(r'[^A-Za-z0-9_-]+', '_', str(source_name))
-    st.download_button(
-        "📥 Export Excel Data Sheets",
-        data=excel_buffer.getvalue(),
-        file_name=f"{safe_shop}_ledger.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        key=f"excel_{safe_source}"
-    )
+    try:
+        with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Parsed Invoice Data")
+        safe_shop = re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)
+        st.download_button(
+            "📥 Export Excel Data Sheets",
+            data=excel_buffer.getvalue(),
+            file_name=f"{safe_shop}_ledger.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+        )
+    except ModuleNotFoundError:
+        csv_data = df.to_csv(index=False).encode("utf-8")
+        safe_shop = re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)
+        st.download_button(
+            "📥 Download CSV Instead",
+            data=csv_data,
+            file_name=f"{safe_shop}_ledger.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
 
     pdf_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
     doc = SimpleDocTemplate(pdf_temp.name)
@@ -429,11 +454,11 @@ def render_bill_result(data, source_name, save_to_db=False):
         st.download_button(
             "📄 Download Sign-off PDF",
             f.read(),
-            file_name=f"{safe_shop}_receipt.pdf",
+            file_name=f"{re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)}_receipt.pdf",
             mime="application/pdf",
             use_container_width=True,
-            key=f"pdf_{safe_source}"
         )
+
 
 def build_batch_summary(results):
     rows = []
@@ -444,18 +469,15 @@ def build_batch_summary(results):
             bill_date = str(data.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
             gst_number = data.get("gst_number") or "N/A"
             items = normalize_items(data.get("items"))
-
             if items:
                 tmp_df = pd.DataFrame(items)
                 tmp_df["amount"] = pd.to_numeric(tmp_df["amount"], errors="coerce").fillna(0)
                 calculated_total = float(tmp_df["amount"].sum())
             else:
                 calculated_total = 0.0
-
             bill_total = safe_float(data.get("total", 0))
             diff = abs(calculated_total - bill_total)
             status_txt = "Matched" if diff < 1 else "Mismatch"
-
             rows.append({
                 "page": item.get("page"),
                 "source": item.get("source"),
@@ -481,18 +503,17 @@ def build_batch_summary(results):
             })
     return pd.DataFrame(rows)
 
+
 def make_excel_download(df, filename, label="📥 Download Excel", key="excel_download"):
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Batch Summary")
-    st.download_button(
-        label,
-        data=buffer.getvalue(),
-        file_name=filename,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        key=key
-    )
+    try:
+        buffer = BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Batch Summary")
+        st.download_button(label, data=buffer.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key=key)
+    except ModuleNotFoundError:
+        csv_data = df.to_csv(index=False).encode("utf-8")
+        st.download_button("📥 Download CSV Instead", data=csv_data, file_name=filename.replace(".xlsx", ".csv"), mime="text/csv", use_container_width=True, key=key + "_csv")
+
 
 def process_pdf_pages(model_bundle, pdf_bytes, source_name):
     if convert_from_bytes is None:
@@ -506,6 +527,7 @@ def process_pdf_pages(model_bundle, pdf_bytes, source_name):
         except Exception as e:
             results.append({"page": p_idx, "source": source_name, "data": None, "error": str(e)})
     return results
+
 
 def render_upload_module(model_bundle):
     st.markdown(
@@ -565,12 +587,7 @@ def render_upload_module(model_bundle):
                 st.markdown("## 📋 Page-wise Consolidated Summary")
                 summary_df = build_batch_summary(results)
                 st.dataframe(summary_df, use_container_width=True, hide_index=True)
-                make_excel_download(
-                    summary_df,
-                    f"{file.name}_page_wise_summary.xlsx",
-                    label="📥 Download Batch Excel",
-                    key=f"batch_excel_{idx}"
-                )
+                make_excel_download(summary_df, f"{file.name}_page_wise_summary.xlsx", label="📥 Download Batch Excel", key=f"batch_excel_{idx}")
 
                 st.markdown("## ✅ Batch Results")
                 for item in results:
@@ -593,6 +610,7 @@ def render_upload_module(model_bundle):
                             render_bill_result(data, file.name, save_to_db=True)
                         except Exception as e:
                             st.error(f"Structural Parsing Fault: {e}")
+
 
 def main():
     setup_page()
@@ -619,20 +637,15 @@ def main():
             </div>
         """, unsafe_allow_html=True)
 
-        st.markdown(
-            f"<p style='color:#cbd5e1; font-size:14px; margin-left:5px;'>Operator: <b style='color:#38bdf8;'>{DEFAULT_USERNAME} (Deepak)</b></p>",
-            unsafe_allow_html=True
-        )
-        st.markdown(
-            f"<p style='color:#cbd5e1; font-size:13px; margin-left:5px;'>Gemini state: <b>{'Available' if st.session_state.gemini_available else 'Fallback mode'}</b></p>",
-            unsafe_allow_html=True
-        )
+        st.markdown(f"<p style='color:#cbd5e1; font-size:14px; margin-left:5px;'>Operator: <b style='color:#38bdf8;'>{DEFAULT_USERNAME} (Deepak)</b></p>", unsafe_allow_html=True)
+        st.markdown(f"<p style='color:#cbd5e1; font-size:13px; margin-left:5px;'>Gemini state: <b>{'Available' if st.session_state.gemini_available else 'Fallback mode'}</b></p>", unsafe_allow_html=True)
         st.selectbox("Navigate System", ["📤 Upload & Process"], key="app_mode")
         st.markdown("<br><br><hr style='border-color: #1e293b;'>", unsafe_allow_html=True)
         if st.button("🚪 Terminate Session", use_container_width=True, key="terminate_session"):
             terminate_session()
 
     render_upload_module(model_bundle)
+
 
 if __name__ == "__main__":
     main()
