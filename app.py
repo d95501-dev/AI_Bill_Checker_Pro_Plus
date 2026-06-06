@@ -49,8 +49,17 @@ except Exception:
 
 APP_TITLE = "Deep CSC - AI Bill Processor Premium"
 DB_PATH = "bills.db"
-DEFAULT_USERNAME = st.secrets.get("APP_USERNAME", "admin")
-DEFAULT_PASSWORD = st.secrets.get("APP_PASSWORD", "password123")
+
+
+def secret_or_default(key, default=""):
+    try:
+        return st.secrets[key]
+    except Exception:
+        return default
+
+
+DEFAULT_USERNAME = secret_or_default("APP_USERNAME", "admin")
+DEFAULT_PASSWORD = secret_or_default("APP_PASSWORD", "password123")
 
 
 def setup_page():
@@ -176,7 +185,7 @@ def terminate_session():
 def setup_gemini():
     if genai is None:
         return None
-    api_key = st.secrets.get("GEMINI_API_KEY", "").strip()
+    api_key = secret_or_default("GEMINI_API_KEY", "").strip()
     if not api_key or "your_" in api_key.lower():
         return None
     genai.configure(api_key=api_key)
@@ -184,14 +193,14 @@ def setup_gemini():
 
 
 def setup_openai():
-    api_key = st.secrets.get("OPENAI_API_KEY", "").strip()
+    api_key = secret_or_default("OPENAI_API_KEY", "").strip()
     if not api_key or OpenAI is None or "your_" in api_key.lower():
         return None
     return OpenAI(api_key=api_key)
 
 
 def setup_perplexity():
-    api_key = st.secrets.get("PERPLEXITY_API_KEY", "").strip()
+    api_key = secret_or_default("PERPLEXITY_API_KEY", "").strip()
     if not api_key or "your_" in api_key.lower():
         return "", False
     return api_key, True
@@ -200,7 +209,6 @@ def setup_perplexity():
 def setup_google_vision():
     if vision is None:
         return None
-    cred = st.secrets.get("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
     return vision.ImageAnnotatorClient()
 
 
@@ -213,13 +221,13 @@ def setup_document_ai():
 def setup_textract():
     if boto3 is None:
         return None
-    if not st.secrets.get("AWS_ACCESS_KEY_ID", "") or not st.secrets.get("AWS_SECRET_ACCESS_KEY", ""):
+    if not secret_or_default("AWS_ACCESS_KEY_ID", "") or not secret_or_default("AWS_SECRET_ACCESS_KEY", ""):
         return None
     return boto3.client(
         "textract",
-        region_name=st.secrets.get("AWS_REGION", "ap-south-1"),
-        aws_access_key_id=st.secrets.get("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=st.secrets.get("AWS_SECRET_ACCESS_KEY"),
+        region_name=secret_or_default("AWS_REGION", "ap-south-1"),
+        aws_access_key_id=secret_or_default("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=secret_or_default("AWS_SECRET_ACCESS_KEY"),
     )
 
 
@@ -303,7 +311,7 @@ def analyze_openai(client, image):
         raise RuntimeError("OpenAI not configured")
     b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
     resp = client.chat.completions.create(
-        model=st.secrets.get("OPENAI_MODEL", "gpt-4o-mini"),
+        model=secret_or_default("OPENAI_MODEL", "gpt-4o-mini"),
         messages=[
             {"role": "system", "content": build_schema_prompt()},
             {"role": "user", "content": [{"type": "text", "text": "Extract invoice JSON from this image."}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}]},
@@ -318,7 +326,7 @@ def analyze_perplexity(api_key, image):
         raise RuntimeError("Perplexity not configured")
     b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
     payload = {
-        "model": st.secrets.get("PERPLEXITY_MODEL", "sonar-pro"),
+        "model": secret_or_default("PERPLEXITY_MODEL", "sonar-pro"),
         "messages": [
             {"role": "system", "content": build_schema_prompt()},
             {"role": "user", "content": [{"type": "text", "text": "Extract invoice JSON from this image."}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}]},
@@ -361,9 +369,9 @@ def analyze_google_vision(client, image):
 def analyze_document_ai(image):
     if documentai is None:
         raise RuntimeError("Document AI not configured")
-    project_id = st.secrets.get("GCP_PROJECT_ID", "").strip()
-    location = st.secrets.get("DOC_AI_LOCATION", "us")
-    processor_id = st.secrets.get("DOC_AI_PROCESSOR_ID", "").strip()
+    project_id = secret_or_default("GCP_PROJECT_ID", "").strip()
+    location = secret_or_default("DOC_AI_LOCATION", "us")
+    processor_id = secret_or_default("DOC_AI_PROCESSOR_ID", "").strip()
     if not project_id or not processor_id:
         raise RuntimeError("Document AI credentials not configured")
     client = documentai.DocumentProcessorServiceClient()
@@ -590,33 +598,9 @@ def build_batch_summary(results):
             else:
                 calc_total = 0.0
             total = safe_float(d.get("total", 0))
-            rows.append(
-                {
-                    "page": item.get("page"),
-                    "source": item.get("source"),
-                    "shop_name": str(d.get("shop_name") or "Unknown Shop").strip(),
-                    "bill_date": str(d.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip(),
-                    "gst_number": d.get("gst_number") or "N/A",
-                    "bill_total": total,
-                    "calculated_total": calc_total,
-                    "difference": abs(calc_total - total),
-                    "status": "Matched" if abs(calc_total - total) < 1 else "Mismatch",
-                }
-            )
+            rows.append({"page": item.get("page"), "source": item.get("source"), "shop_name": str(d.get("shop_name") or "Unknown Shop").strip(), "bill_date": str(d.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip(), "gst_number": d.get("gst_number") or "N/A", "bill_total": total, "calculated_total": calc_total, "difference": abs(calc_total - total), "status": "Matched" if abs(calc_total - total) < 1 else "Mismatch"})
         else:
-            rows.append(
-                {
-                    "page": item.get("page"),
-                    "source": item.get("source"),
-                    "shop_name": None,
-                    "bill_date": None,
-                    "gst_number": None,
-                    "bill_total": None,
-                    "calculated_total": None,
-                    "difference": None,
-                    "status": f"Error: {item.get('error')}",
-                }
-            )
+            rows.append({"page": item.get("page"), "source": item.get("source"), "shop_name": None, "bill_date": None, "gst_number": None, "bill_total": None, "calculated_total": None, "difference": None, "status": f"Error: {item.get('error')}"})
     return pd.DataFrame(rows)
 
 
