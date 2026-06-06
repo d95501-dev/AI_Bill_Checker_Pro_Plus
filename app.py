@@ -47,6 +47,10 @@ try:
 except Exception:
     boto3 = None
 
+# ✅ ADDED: Warnings suppression
+import warnings
+warnings.filterwarnings('ignore')
+
 APP_TITLE = "Deep CSC - AI Bill Processor Premium"
 DB_PATH = "bills.db"
 
