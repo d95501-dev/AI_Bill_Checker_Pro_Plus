@@ -2,6 +2,13 @@ streamlit
 pandas
 numpy
 pillow
+reportlab
+pdf2image
+google-generativeai
+openai
 requests
 openpyxl
-reportlab>=4.2.2
+pytesseract
+google-cloud-vision
+google-cloud-documentai
+boto3
