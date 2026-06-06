@@ -1,2 +1,6 @@
+zlib1g-dev
+libjpeg-dev
+libpng-dev
+build-essential
 poppler-utils
 tesseract-ocr
