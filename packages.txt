@@ -4,3 +4,5 @@ libpng-dev
 build-essential
 poppler-utils
 tesseract-ocr
+libtesseract-dev
+poppler-utils
