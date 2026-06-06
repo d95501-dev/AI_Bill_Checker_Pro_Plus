@@ -1,3 +1,2 @@
-google-cloud-vision
-google-cloud-documentai
-boto3
+tesseract-ocr
+poppler-utils
