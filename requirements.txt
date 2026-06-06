@@ -4,3 +4,4 @@ numpy
 pillow
 requests
 openpyxl
+reportlab>=4.2.2
