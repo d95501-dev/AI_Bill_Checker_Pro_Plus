@@ -173,6 +173,7 @@ def init_runtime_state():
         "textract_enabled": True,
         "scanning_active": False,
         "selected_printer": None,
+        "printer_refresh_nonce": 0,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -359,23 +360,6 @@ def analyze_perplexity(api_key, image):
                 ],
             },
         ],
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "invoice_schema",
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "shop_name": {"type": ["string", "null"]},
-                        "bill_date": {"type": ["string", "null"]},
-                        "gst_number": {"type": ["string", "null"]},
-                        "items": {"type": "array"},
-                        "total": {"type": ["string", "null"]},
-                    },
-                    "required": ["shop_name", "bill_date", "gst_number", "items", "total"],
-                },
-            },
-        },
         "temperature": 0.0,
     }
     r = requests.post(
@@ -537,10 +521,7 @@ def check_printer_status():
 def get_windows_printers():
     if sys.platform != "win32" or win32print is None:
         return []
-    printers = []
-    for p in win32print.EnumPrinters(2):
-        printers.append(p[2])
-    return printers
+    return [p[2] for p in win32print.EnumPrinters(2)]
 
 
 def get_default_printer():
@@ -557,22 +538,29 @@ def render_printer_selector():
         st.info("Windows only feature")
         return None
 
+    if st.button("🔄 Refresh printer list", key="refresh_printers"):
+        st.session_state.printer_refresh_nonce += 1
+        st.rerun()
+
     printers = get_windows_printers()
     if not printers:
-        st.warning("No Windows printers found.")
+        st.warning("No printers found.")
         return None
 
     default_printer = get_default_printer()
-    default_index = printers.index(default_printer) if default_printer in printers else 0
+    if "selected_printer" not in st.session_state or st.session_state.selected_printer not in printers:
+        st.session_state.selected_printer = default_printer if default_printer in printers else printers[0]
 
     selected_printer = st.selectbox(
         "Select Printer",
         printers,
-        index=default_index,
-        key="printer_selector",
+        index=printers.index(st.session_state.selected_printer),
+        key=f"printer_selector_{st.session_state.printer_refresh_nonce}",
     )
 
+    st.session_state.selected_printer = selected_printer
     st.caption(f"Current default printer: {default_printer or 'Not set'}")
+
     if st.button("Set as Default Printer", use_container_width=True, key="set_default_printer"):
         try:
             win32print.SetDefaultPrinter(selected_printer)
@@ -611,6 +599,8 @@ def open_naps2_scanner():
     naps2_paths = [
         r"C:\Program Files\NAPS2\NAPS2.exe",
         r"C:\Program Files (x86)\NAPS2\NAPS2.exe",
+        r"C:\Program Files\NAPS2\naps2.exe",
+        r"C:\Program Files (x86)\NAPS2\naps2.exe",
     ]
 
     for p in naps2_paths:
