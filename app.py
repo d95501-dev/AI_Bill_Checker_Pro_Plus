@@ -569,6 +569,20 @@ def open_naps2_scanner():
     return False, "NAPS2 not installed. Please install it first."
 
 
+def show_printer_setup_notice():
+    if sys.platform == "win32":
+        st.info(
+            "ℹ️ Printer Setup: Windows only feature\n"
+            "1. Open Windows Settings → Bluetooth & devices → Printers & scanners\n"
+            "2. Add your Brother printer\n"
+            "3. Set it as default printer\n"
+            "4. Restart the app",
+            icon="ℹ️",
+        )
+    else:
+        st.info("ℹ️ Printer Setup: Windows only feature", icon="ℹ️")
+
+
 def export_payload(df, base_name, widget_key):
     try:
         buffer = BytesIO()
@@ -843,6 +857,8 @@ def render_upload_module(model_bundle):
         '<div class="deep-csc-header"><div class="branding-text"><h1>🧾 AI Multi-Bill OCR Processor</h1><p style="color: #94a3b8; margin: 5px 0 0 0;">Automated structural data parsing pipeline powered by multiple providers.</p></div><div class="csc-meta-badge">📍 <b>Deep Digital Seva Kendra</b><br>👤 Owner: Deepak | ID: 256423250015</div><div class="branding-badge">Deep CSC AI</div></div>',
         unsafe_allow_html=True,
     )
+
+    show_printer_setup_notice()
 
     printer_ok, printer_msg, printer_type = check_printer_status()
 
