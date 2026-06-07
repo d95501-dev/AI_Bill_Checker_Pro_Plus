@@ -65,6 +65,8 @@ DB_PATH = "bills.db"
 MAX_PDF_PAGES = 1
 PDF_DPI = 200
 PROCESSING_TIMEOUT_SECONDS = 30
+VISION_TIMEOUT_SECONDS = 15
+VISION_RETRY_COUNT = 2
 
 
 def secret_or_default(key, default=""):
@@ -157,23 +159,77 @@ def terminate_session():
 
 def apply_theme_css():
     if st.session_state.theme_mode == "dark":
-        st.markdown("<style>.stApp { background: #0b1220; color: #e5e7eb; } section[data-testid='stSidebar'] { background: #0f172a; } .stDataFrame, .stMarkdown, .stText, .stMetricValue, .stMetricLabel { color: #e5e7eb !important; } div[data-testid='stMetricValue'] { color: #f8fafc !important; } div[data-testid='stMetricLabel'] { color: #cbd5e1 !important; }</style>", unsafe_allow_html=True)
+        st.markdown(
+            """
+            <style>
+            .stApp { background: #0b1220; color: #e5e7eb; }
+            section[data-testid="stSidebar"] { background: #0f172a; color: #e5e7eb; }
+            .stMarkdown, .stText, .stMetricValue, .stMetricLabel, .stInfo, .stWarning, .stError { color: #e5e7eb !important; }
+            .sidebar-title, .sidebar-subtitle, .sidebar-id-badge, .sidebar-brand-box, label, .stRadio label, .stSelectbox label, .stTextInput label, .stFileUploader label { color: #e5e7eb !important; }
+            div[data-testid="stMetricValue"] { color: #f8fafc !important; }
+            div[data-testid="stMetricLabel"] { color: #cbd5e1 !important; }
+            .stRadio > div, .stSelectbox > div, .stTextInput > div { color: #e5e7eb !important; }
+            .stButton>button { background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important; color: white !important; }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
     else:
-        st.markdown("<style>.stApp { background: #f8fafc; color: #0f172a; } section[data-testid='stSidebar'] { background: #0f172a; }</style>", unsafe_allow_html=True)
+        st.markdown(
+            """
+            <style>
+            .stApp { background: #f8fafc; color: #0f172a; }
+            section[data-testid="stSidebar"] { background: #0f172a; color: #f8fafc; }
+            .sidebar-title, .sidebar-subtitle, .sidebar-id-badge, .sidebar-brand-box, label, .stRadio label, .stSelectbox label, .stTextInput label, .stFileUploader label { color: #f8fafc !important; }
+            .stMarkdown, .stText, .stMetricValue, .stMetricLabel { color: #0f172a !important; }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 def apply_css():
-    st.markdown("""
-    <style>
-    .main { background-color: #f8fafc; }
-    h1, h2, h3, h4 { font-family: system-ui, sans-serif !important; color: #0f172a !important; font-weight: 800 !important; }
-    .deep-csc-header { background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #311042 100%); padding: 30px; border-radius: 24px; margin-bottom: 20px; border: 1px solid rgba(255, 255, 255, 0.1); display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px; }
-    .branding-text h1 { background: linear-gradient(to right, #38bdf8, #c084fc, #f43f5e); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin: 0; font-size: 34px !important; letter-spacing: -0.5px; }
-    .csc-meta-badge { background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.15); padding: 10px 18px; border-radius: 14px; color: #e2e8f0 !important; font-size: 13px !important; line-height: 1.6; }
-    .branding-badge { background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%); color: white !important; padding: 8px 18px; border-radius: 50px; font-size: 13px !important; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; box-shadow: 0 4px 14px rgba(236, 72, 153, 0.4); }
-    .stButton>button { background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important; color: white !important; font-weight: 700 !important; padding: 12px 24px !important; border-radius: 12px !important; border: none !important; }
-    </style>
-    """, unsafe_allow_html=True)
+    st.markdown(
+        """
+        <style>
+        .main { background-color: #f8fafc; }
+        h1, h2, h3, h4 { font-family: system-ui, sans-serif !important; color: #0f172a !important; font-weight: 800 !important; }
+        .deep-csc-header {
+            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #311042 100%);
+            padding: 30px; border-radius: 24px; margin-bottom: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px;
+            color: #e5e7eb !important;
+        }
+        .branding-text h1 {
+            background: linear-gradient(to right, #38bdf8, #c084fc, #f43f5e);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            margin: 0; font-size: 34px !important; letter-spacing: -0.5px;
+        }
+        .csc-meta-badge {
+            background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.15);
+            padding: 10px 18px; border-radius: 14px; color: #e2e8f0 !important; font-size: 13px !important; line-height: 1.6;
+        }
+        .branding-badge {
+            background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%); color: white !important;
+            padding: 8px 18px; border-radius: 50px; font-size: 13px !important; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 1px; box-shadow: 0 4px 14px rgba(236, 72, 153, 0.4);
+        }
+        .stButton>button {
+            background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important;
+            color: white !important;
+            font-weight: 700 !important;
+            padding: 12px 24px !important;
+            border-radius: 12px !important;
+            border: none !important;
+        }
+        [data-testid="stSidebar"] * {
+            color: #f8fafc !important;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 @st.cache_resource
@@ -208,7 +264,12 @@ def setup_textract():
         return None
     if not secret_or_default("AWS_ACCESS_KEY_ID", "") or not secret_or_default("AWS_SECRET_ACCESS_KEY", ""):
         return None
-    return boto3.client("textract", region_name=secret_or_default("AWS_REGION", "ap-south-1"), aws_access_key_id=secret_or_default("AWS_ACCESS_KEY_ID"), aws_secret_access_key=secret_or_default("AWS_SECRET_ACCESS_KEY"))
+    return boto3.client(
+        "textract",
+        region_name=secret_or_default("AWS_REGION", "ap-south-1"),
+        aws_access_key_id=secret_or_default("AWS_ACCESS_KEY_ID"),
+        aws_secret_access_key=secret_or_default("AWS_SECRET_ACCESS_KEY"),
+    )
 
 
 def validate_gst(gst_str):
@@ -225,7 +286,14 @@ def normalize_items(items):
         return cleaned
     for it in items:
         if isinstance(it, dict):
-            cleaned.append({"name": it.get("name") or "", "qty": it.get("qty") or "", "rate": it.get("rate") or "", "amount": it.get("amount") or ""})
+            cleaned.append(
+                {
+                    "name": it.get("name") or "",
+                    "qty": it.get("qty") or "",
+                    "rate": it.get("rate") or "",
+                    "amount": it.get("amount") or "",
+                }
+            )
     return cleaned
 
 
@@ -281,6 +349,29 @@ def image_to_bytes(image):
     return buf.getvalue()
 
 
+def heuristic_parse_from_text(text):
+    text = text or ""
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    shop_name = lines[0][:80] if lines else None
+    gst_number = None
+    bill_date = None
+    total = None
+    m = re.search(r"\bGSTIN[:\s]*([0-9A-Z]{15})\b", text, re.I)
+    if m:
+        gst_number = m.group(1)
+    for p in [r"\b(\d{2}[/-]\d{2}[/-]\d{2,4})\b", r"\b(\d{4}[/-]\d{2}[/-]\d{2})\b"]:
+        m = re.search(p, text)
+        if m:
+            bill_date = m.group(1)
+            break
+    for p in [r"\bTotal[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b", r"\bGrand Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b"]:
+        m = re.search(p, text, re.I)
+        if m:
+            total = m.group(1)
+            break
+    return {"shop_name": shop_name, "bill_date": bill_date, "gst_number": gst_number, "items": [], "total": total}
+
+
 def analyze_gemini(model, image):
     resp = model.generate_content([build_schema_prompt(), image])
     return parse_json_from_response(getattr(resp, "text", ""))
@@ -332,12 +423,27 @@ def analyze_perplexity(api_key, image):
     return parse_json_from_response(r.json()["choices"][0]["message"]["content"])
 
 
+def safe_google_vision_detect(client, image_bytes, timeout_seconds=15, retries=2):
+    img = vision.Image(content=image_bytes)
+    last_err = None
+    for _ in range(retries + 1):
+        try:
+            return client.document_text_detection(image=img, timeout=timeout_seconds)
+        except Exception as e:
+            last_err = e
+            msg = str(e)
+            if ("503" not in msg) and ("ServiceUnavailable" not in type(e).__name__) and ("DeadlineExceeded" not in type(e).__name__):
+                raise
+    raise RuntimeError("Google Vision temporarily unavailable") from last_err
+
+
 def analyze_google_vision(client, image):
     b = image_to_bytes(image)
-    img = vision.Image(content=b)
-    resp = client.document_text_detection(image=img)
+    resp = safe_google_vision_detect(client, b, timeout_seconds=VISION_TIMEOUT_SECONDS, retries=VISION_RETRY_COUNT)
     text = getattr(resp, "full_text_annotation", None)
     extracted = getattr(text, "text", "") if text else ""
+    if not extracted.strip():
+        return heuristic_parse_from_text("")
     return heuristic_parse_from_text(extracted)
 
 
@@ -364,61 +470,44 @@ def analyze_textract(client, image):
     return heuristic_parse_from_text("\n".join(text_parts))
 
 
-def heuristic_parse_from_text(text):
-    text = text or ""
-    lines = [x.strip() for x in text.splitlines() if x.strip()]
-    shop_name = lines[0][:80] if lines else None
-    gst_number = None
-    bill_date = None
-    total = None
-    m = re.search(r"\bGSTIN[:\s]*([0-9A-Z]{15})\b", text, re.I)
-    if m:
-        gst_number = m.group(1)
-    for p in [r"\b(\d{2}[/-]\d{2}[/-]\d{2,4})\b", r"\b(\d{4}[/-]\d{2}[/-]\d{2})\b"]:
-        m = re.search(p, text)
-        if m:
-            bill_date = m.group(1)
-            break
-    for p in [r"\bTotal[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b", r"\bGrand Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b"]:
-        m = re.search(p, text, re.I)
-        if m:
-            total = m.group(1)
-            break
-    return {"shop_name": shop_name, "bill_date": bill_date, "gst_number": gst_number, "items": [], "total": total}
-
-
 def analyze_with_auto_fallback(model_bundle, image):
     provider = st.session_state.get("selected_provider", "Google Vision OCR")
+    try:
+        if provider == "Google Vision OCR" and model_bundle.get("vision_client") and st.session_state.get("vision_enabled", True):
+            return analyze_google_vision(model_bundle["vision_client"], image)
 
-    if provider == "Google Vision OCR" and model_bundle.get("vision_client") and st.session_state.get("vision_enabled", True):
-        return analyze_google_vision(model_bundle["vision_client"], image)
+        if provider == "Google Document AI" and st.session_state.get("docai_enabled", False):
+            return analyze_document_ai(image)
 
-    if provider == "Google Document AI" and st.session_state.get("docai_enabled", False):
-        return analyze_document_ai(image)
+        if provider == "AWS Textract" and model_bundle.get("textract_client") and st.session_state.get("textract_enabled", False):
+            return analyze_textract(model_bundle["textract_client"], image)
 
-    if provider == "AWS Textract" and model_bundle.get("textract_client") and st.session_state.get("textract_enabled", False):
-        return analyze_textract(model_bundle["textract_client"], image)
+        if provider == "Gemini" and model_bundle.get("gemini") and can_try_gemini():
+            try:
+                result = analyze_gemini(model_bundle["gemini"], image)
+                st.session_state.gemini_available = True
+                st.session_state.last_gemini_error_time = None
+                st.session_state.gemini_retry_count = 0
+                return result
+            except Exception as e:
+                st.session_state.gemini_available = False
+                st.session_state.last_gemini_error_time = datetime.now()
+                st.session_state.gemini_retry_count += 1
+                raise e
 
-    if provider == "Gemini" and model_bundle.get("gemini") and can_try_gemini():
-        try:
-            result = analyze_gemini(model_bundle["gemini"], image)
-            st.session_state.gemini_available = True
-            st.session_state.last_gemini_error_time = None
-            st.session_state.gemini_retry_count = 0
-            return result
-        except Exception as e:
-            st.session_state.gemini_available = False
-            st.session_state.last_gemini_error_time = datetime.now()
-            st.session_state.gemini_retry_count += 1
-            raise e
+        if provider == "OpenAI" and model_bundle.get("openai"):
+            return analyze_openai(model_bundle["openai"], image)
 
-    if provider == "OpenAI" and model_bundle.get("openai"):
-        return analyze_openai(model_bundle["openai"], image)
+        if provider == "Perplexity Verify" and model_bundle.get("perplexity_key") and st.session_state.get("perplexity_enabled", False):
+            return analyze_perplexity(model_bundle["perplexity_key"], image)
 
-    if provider == "Perplexity Verify" and model_bundle.get("perplexity_key") and st.session_state.get("perplexity_enabled", False):
-        return analyze_perplexity(model_bundle["perplexity_key"], image)
+        raise RuntimeError(f"Provider not available or disabled: {provider}")
 
-    raise RuntimeError(f"Provider not available or disabled: {provider}")
+    except Exception as e:
+        if provider == "Google Vision OCR":
+            st.warning("Google Vision failed, using heuristic fallback.")
+            return heuristic_parse_from_text("")
+        raise e
 
 
 def check_printer_status():
@@ -453,11 +542,27 @@ def get_default_printer():
 def render_printer_status_card():
     ok, msg, kind = check_printer_status()
     if ok:
-        st.markdown(f"<div style='padding:14px;border-radius:14px;background:#ecfdf5;border:1px solid #10b981;margin-bottom:12px;'><b style='color:#047857;'>🟢 Printer Ready</b><br><span style='color:#065f46;'>{msg}</span></div>", unsafe_allow_html=True)
+        st.markdown(
+            f"""
+            <div style="padding:14px;border-radius:14px;background:#ecfdf5;border:1px solid #10b981;margin-bottom:12px;">
+                <b style="color:#047857;">🟢 Printer Ready</b><br>
+                <span style="color:#065f46;">{msg}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
     else:
         color = "#f59e0b" if kind == "install" else "#ef4444"
         label = "🟡 Printer Setup Needed" if kind == "install" else "🔴 Printer Not Ready"
-        st.markdown(f"<div style='padding:14px;border-radius:14px;background:#fff7ed;border:1px solid {color};margin-bottom:12px;'><b style='color:{color};'>{label}</b><br><span style='color:#7c2d12;'>{msg}</span></div>", unsafe_allow_html=True)
+        st.markdown(
+            f"""
+            <div style="padding:14px;border-radius:14px;background:#fff7ed;border:1px solid {color};margin-bottom:12px;">
+                <b style="color:{color};">{label}</b><br>
+                <span style="color:#7c2d12;">{msg}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
 
 def render_printer_selector():
@@ -474,7 +579,12 @@ def render_printer_selector():
     default_printer = get_default_printer()
     if "selected_printer" not in st.session_state or st.session_state.selected_printer not in printers:
         st.session_state.selected_printer = default_printer if default_printer in printers else printers[0]
-    selected_printer = st.selectbox("Select Printer", printers, index=printers.index(st.session_state.selected_printer), key=f"printer_selector_{st.session_state.printer_refresh_nonce}")
+    selected_printer = st.selectbox(
+        "Select Printer",
+        printers,
+        index=printers.index(st.session_state.selected_printer),
+        key=f"printer_selector_{st.session_state.printer_refresh_nonce}",
+    )
     st.session_state.selected_printer = selected_printer
     st.caption(f"Current default printer: {default_printer or 'Not set'}")
     if st.button("Set as Default Printer", use_container_width=True, key="set_default_printer"):
@@ -844,8 +954,12 @@ def render_upload_module():
                 image = Image.open(BytesIO(file_bytes)).convert("RGB")
                 st.image(image, caption="Uploaded Bill", use_container_width=True)
                 if st.button("Process Image", use_container_width=True):
-                    data = analyze_with_auto_fallback(model_bundle, image)
-                    render_bill_result(data, uploaded_file.name, save_to_db=True)
+                    with st.spinner("Processing bill..."):
+                        try:
+                            data = analyze_with_auto_fallback(model_bundle, image)
+                            render_bill_result(data, uploaded_file.name, save_to_db=True)
+                        except Exception as e:
+                            st.error(f"Processing failed: {e}")
 
     with tabs[1]:
         st.subheader("Print Preview")
