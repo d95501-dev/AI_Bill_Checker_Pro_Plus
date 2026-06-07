@@ -80,7 +80,12 @@ DEFAULT_PASSWORD = secret_or_default("APP_PASSWORD", "password123")
 
 
 def setup_page():
-    st.set_page_config(page_title=APP_TITLE, page_icon="🧾", layout="wide", initial_sidebar_state="expanded")
+    st.set_page_config(
+        page_title=APP_TITLE,
+        page_icon="🧾",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
 
 
 def apply_css():
@@ -105,5 +110,24 @@ def apply_css():
             padding: 10px 18px; border-radius: 14px; color: #e2e8f0 !important; font-size: 13px !important; line-height: 1.6;
         }
         .branding-badge {
-            background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%); color: white !important;
-            padding
+            background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%);
+            color: white !important;
+            padding: 10px 14px;
+            border-radius: 12px;
+            font-weight: 700;
+            display: inline-block;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def main():
+    setup_page()
+    apply_css()
+    st.title("Deep CSC - AI Bill Processor Premium")
+    st.success("App loaded successfully.")
+
+if __name__ == "__main__":
+    main()
