@@ -5,8 +5,10 @@ import sqlite3
 import tempfile
 import subprocess
 import os
+import sys
 from datetime import datetime
 from io import BytesIO
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -49,14 +51,17 @@ try:
 except Exception:
     boto3 = None
 
+try:
+    import win32print
+    WINDOWS_PRINTER_AVAILABLE = True
+except Exception:
+    WINDOWS_PRINTER_AVAILABLE = False
+
 import warnings
 warnings.filterwarnings('ignore')
 
 APP_TITLE = "Deep CSC - AI Bill Processor Premium"
 DB_PATH = "bills.db"
-
-PRINTER_EXE_BROTHER = r"C:\Program Files (x86)\Brother\iPrint&Scan\Brother iPrint&Scan.exe"
-PRINTER_EXE_NAPS2 = r"C:\Program Files\NAPS2\NAPS2.exe"
 
 
 def secret_or_default(key, default=""):
@@ -169,6 +174,7 @@ def init_runtime_state():
         "docai_enabled": True,
         "vision_enabled": True,
         "textract_enabled": True,
+        "scanning_active": False,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -501,80 +507,56 @@ def analyze_with_auto_fallback(model_bundle, image):
     raise RuntimeError(f"All providers failed: {last_err}")
 
 
-def check_printer_available(printer_exe):
-    """Check if printer executable exists"""
-    if not printer_exe:
-        return False
-    return os.path.exists(printer_exe)
-
-
-def get_available_printer():
-    """Get available printer executable"""
-    if check_printer_available(PRINTER_EXE_NAPS2):
-        return PRINTER_EXE_NAPS2, "NAPS2"
-    elif check_printer_available(PRINTER_EXE_BROTHER):
-        return PRINTER_EXE_BROTHER, "Brother iPrint&Scan"
-    return None, None
-
-
-def direct_print_excel(file_path):
-    """Directly print Excel file using default printer"""
+def check_printer_status():
+    """Check printer status using Windows API - NO PATH DEPENDENCY"""
+    if sys.platform != "win32":
+        return False, "Windows only feature", "windows"
+    
+    if not WINDOWS_PRINTER_AVAILABLE:
+        return False, "Install pywin32: pip install pywin32", "install"
+    
     try:
-        import os
-        import subprocess
-        import sys
-        
-        # Windows ke liye direct print
+        default_printer = win32print.GetDefaultPrinter()
+        if default_printer:
+            return True, default_printer, "ready"
+        return False, "No printer installed in Windows", "none"
+    except Exception as e:
+        return False, str(e), "error"
+
+
+def print_excel_file(file_path):
+    """Print Excel file using Windows API"""
+    try:
         if sys.platform == "win32":
             os.startfile(file_path, "print")
-            return True, "Print command sent to default printer ✓"
-        else:
-            return False, "Direct print only works on Windows"
+            return True, "🖨️ Print job sent to default printer! ✓"
+        return False, "Windows only feature"
     except Exception as e:
         return False, f"Print failed: {str(e)}"
 
 
-def direct_print_pdf(file_path):
-    """Directly print PDF file"""
+def print_pdf_file(file_path):
+    """Print PDF file using Windows API"""
     try:
-        import os
-        import subprocess
-        import sys
-        
         if sys.platform == "win32":
             os.startfile(file_path, "print")
-            return True, "Print command sent to default printer ✓"
-        else:
-            return False, "Direct print only works on Windows"
+            return True, "🖨️ Print job sent to default printer! ✓"
+        return False, "Windows only feature"
     except Exception as e:
         return False, f"Print failed: {str(e)}"
 
 
-def open_printer_app():
-    """Open printer/scanner application"""
+def open_windows_scanner():
+    """Open Windows built-in scanning application"""
     try:
-        printer_exe, printer_name = get_available_printer()
-        if printer_exe:
-            subprocess.Popen([printer_exe])
-            return True, f"Opened {printer_name}"
-        else:
-            return False, "No printer executable found. Install Brother iPrint&Scan or NAPS2"
-    except Exception as e:
-        return False, f"Failed to open printer: {str(e)}"
-
-
-def scan_from_printer():
-    """Scan from connected printer/scanner"""
-    try:
-        printer_exe, printer_name = get_available_printer()
-        if printer_exe:
-            # NAPS2 ya Brother app open karo scan ke liye
-            subprocess.Popen([printer_exe])
-            return True, f"{printer_name} opened. Use app to scan."
-        else:
-            return False, "No scanner found. Install Brother iPrint&Scan or NAPS2"
-    except Exception as e:
-        return False, f"Scan failed: {str(e)}"
+        # Try Windows Fax and Scan first
+        subprocess.Popen(["C:\\Windows\\System32\\WFS.exe"])
+        return True, "📷 Windows Fax and Scan opened! Use it to scan"
+    except:
+        pass
+    
+    # Show user how to scan
+    return True, "📷 Open Start Menu → Search 'Scan' → Open Windows Scan app", "guide"
 
 
 def export_payload(df, base_name, widget_key):
@@ -583,25 +565,21 @@ def export_payload(df, base_name, widget_key):
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name="Data")
         
-        # Save Excel file temporarily for printing
         temp_excel = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
         temp_excel.write(buffer.getvalue())
         temp_excel.close()
         
         st.download_button("📥 Export Excel Data Sheets", data=buffer.getvalue(), file_name=f"{base_name}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key=f"excel_{widget_key}")
         
-        # Direct print button
-        print_success, print_msg = direct_print_excel(temp_excel.name)
+        print_success, print_msg = print_excel_file(temp_excel.name)
         if print_success:
             st.success(print_msg, icon="🖨️")
-            st.info(f"Excel file saved to: {temp_excel.name}", icon="📁")
         else:
             st.warning(print_msg, icon="⚠️")
             
     except Exception as e:
         csv_data = df.to_csv(index=False).encode("utf-8")
         st.download_button("📥 Download CSV Instead", data=csv_data, file_name=f"{base_name}.csv", mime="text/csv", use_container_width=True, key=f"csv_{widget_key}")
-        st.error(f"Export error: {str(e)}", icon="❌")
 
 
 def export_pdf(shop_name, bill_date, gst_number, bill_total, widget_key):
@@ -619,8 +597,7 @@ def export_pdf(shop_name, bill_date, gst_number, bill_total, widget_key):
     with open(pdf_temp.name, "rb") as f:
         st.download_button("📄 Download Sign-off PDF", f.read(), file_name=f"{re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)}_receipt.pdf", mime="application/pdf", use_container_width=True, key=f"pdf_{widget_key}")
     
-    # Direct print button for PDF
-    print_success, print_msg = direct_print_pdf(pdf_temp.name)
+    print_success, print_msg = print_pdf_file(pdf_temp.name)
     if print_success:
         st.success(print_msg, icon="🖨️")
     else:
@@ -695,13 +672,11 @@ def render_bill_result(data, source_name, save_to_db=False):
         if insert_bill(shop_name, bill_date, gst_number, bill_total, calculated_total, status_txt):
             st.toast("Saved to DB", icon="💾")
 
-    # Print buttons section
-    st.markdown("### 🖨️ Print & Scan Options")
-    pc1, pc2, pc3 = st.columns(3)
+    st.markdown("### 🖨️ Print Options")
+    pc1, pc2 = st.columns(2)
     
     with pc1:
         if st.button("🖨️ Direct Print Excel", use_container_width=True, key=f"print_excel_{safe_source}"):
-            # Export and print Excel
             try:
                 buffer = BytesIO()
                 with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
@@ -710,7 +685,7 @@ def render_bill_result(data, source_name, save_to_db=False):
                 temp_excel.write(buffer.getvalue())
                 temp_excel.close()
                 
-                print_success, print_msg = direct_print_excel(temp_excel.name)
+                print_success, print_msg = print_excel_file(temp_excel.name)
                 if print_success:
                     st.success(print_msg)
                 else:
@@ -720,7 +695,6 @@ def render_bill_result(data, source_name, save_to_db=False):
     
     with pc2:
         if st.button("📄 Direct Print PDF", use_container_width=True, key=f"print_pdf_{safe_source}"):
-            # Create and print PDF
             pdf_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
             doc = SimpleDocTemplate(pdf_temp.name)
             styles = getSampleStyleSheet()
@@ -732,19 +706,11 @@ def render_bill_result(data, source_name, save_to_db=False):
             ]
             doc.build(elements)
             
-            print_success, print_msg = direct_print_pdf(pdf_temp.name)
+            print_success, print_msg = print_pdf_file(pdf_temp.name)
             if print_success:
                 st.success(print_msg)
             else:
                 st.error(print_msg)
-    
-    with pc3:
-        if st.button("📷 Scan from Printer", use_container_width=True, key=f"scan_{safe_source}", type="primary"):
-            scan_success, scan_msg = scan_from_printer()
-            if scan_success:
-                st.success(scan_msg)
-            else:
-                st.error(scan_msg)
 
     export_payload(df, safe_shop + "_ledger", safe_source)
     export_pdf(shop_name, bill_date, gst_number, bill_total, safe_source)
@@ -775,15 +741,13 @@ def make_excel_download(df, filename, label="📥 Download Excel", key="excel_do
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name="Batch Summary")
         
-        # Save for printing
         temp_excel = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
         temp_excel.write(buffer.getvalue())
         temp_excel.close()
         
         st.download_button(label, data=buffer.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key=key)
         
-        # Direct print
-        print_success, print_msg = direct_print_excel(temp_excel.name)
+        print_success, print_msg = print_excel_file(temp_excel.name)
         if print_success:
             st.success(f"🖨️ {print_msg}")
     except Exception:
@@ -811,20 +775,49 @@ def render_upload_module(model_bundle):
         unsafe_allow_html=True,
     )
 
-    # Printer/Scanner status
-    printer_exe, printer_name = get_available_printer()
-    if printer_exe:
-        st.success(f"🖨️ **Printer/Scanner Ready:** {printer_name} detected ✓", icon="✅")
-    else:
-        st.warning("⚠️ **Printer not detected**. Install Brother iPrint&Scan or NAPS2 for scanning", icon="⚠️")
+    # ✅ UPDATED: Better printer status check
+    printer_ok, printer_msg, printer_type = check_printer_status()
     
-    # Quick scan button
-    if st.button("📷 Quick Scan from Printer", use_container_width=True, key="quick_scan", type="primary"):
-        scan_success, scan_msg = scan_from_printer()
+    if printer_ok:
+        st.success(f"🖨️ **Printer Ready:** {printer_msg} ✓", icon="✅")
+    else:
+        if printer_type == "install":
+            st.warning(
+                f"⚠️ **Install Printer Support**\n\n"
+                "Run this command in terminal:\n"
+                "```bash\npip install pywin32\n```\n\n"
+                "Then restart the app.",
+                icon="⚠️"
+            )
+        else:
+            st.info(
+                f"ℹ️ **Printer Setup**: {printer_msg}\n\n"
+                "1. Windows Settings → Devices → Printers & scanners\n"
+                "2. Add your Brother printer\n"
+                "3. Set as default printer\n"
+                "4. Restart app",
+                icon="ℹ️"
+            )
+    
+    # Test print button
+    if st.button("🖨️ Test Print", use_container_width=True, key="test_print"):
+        test_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        doc = SimpleDocTemplate(test_pdf.name)
+        styles = getSampleStyleSheet()
+        doc.build([Paragraph("Test Print from Deep CSC AI - Bill Processor", styles["Normal"])])
+        
+        print_success, print_msg = print_pdf_file(test_pdf.name)
+        if print_success:
+            st.success(print_msg)
+        else:
+            st.error(print_msg)
+    
+    # Open scanner button
+    if st.button("📷 Open Scanner App", use_container_width=True, key="open_scanner", type="primary"):
+        scan_success, scan_msg = open_windows_scanner()
         if scan_success:
             st.success(scan_msg)
-            # After scan, user can upload the scanned image
-            st.info("Use the scanned image from your printer app to upload below", icon="ℹ️")
+            st.info("⬆️ After scanning, upload the image below to process it automatically", icon="ℹ️")
         else:
             st.error(scan_msg)
 
@@ -932,26 +925,33 @@ def main():
         st.markdown(f"<p style='color:#cbd5e1; font-size:14px; margin-left:5px;'>Operator: <b style='color:#38bdf8;'>{DEFAULT_USERNAME} (Deepak)</b></p>", unsafe_allow_html=True)
         st.markdown(f"<p style='color:#cbd5e1; font-size:13px; margin-left:5px;'>Gemini state: <b>{'Available' if st.session_state.gemini_available else 'Fallback mode'}</b></p>", unsafe_allow_html=True)
         
-        # Printer status in sidebar
-        printer_exe, printer_name = get_available_printer()
-        if printer_name:
-            st.markdown(f"<p style='color:#10b981; font-size:13px; margin-left:5px;'>🖨️ Printer: <b style='color:#10b981;'>{printer_name}</b></p>", unsafe_allow_html=True)
+        # ✅ UPDATED: Printer status in sidebar
+        printer_ok, printer_msg, printer_type = check_printer_status()
+        if printer_ok:
+            st.markdown(f"<p style='color:#10b981; font-size:13px; margin-left:5px;'>🖨️ Printer: <b style='color:#10b981;'>{printer_msg}</b></p>", unsafe_allow_html=True)
+        elif printer_type == "install":
+            st.markdown(f"<p style='color:#f59e0b; font-size:13px; margin-left:5px;'>⚠️ Printer: <b style='color:#f59e0b;'>Install pywin32</b></p>", unsafe_allow_html=True)
         else:
-            st.markdown(f"<p style='color:#f59e0b; font-size:13px; margin-left:5px;'>⚠️ Printer: <b style='color:#f59e0b;'>Not detected</b></p>", unsafe_allow_html=True)
+            st.markdown(f"<p style='color:#f59e0b; font-size:13px; margin-left:5px;'>⚠️ Printer: <b style='color:#f59e0b;'>Not configured</b></p>", unsafe_allow_html=True)
         
         st.selectbox("Navigate System", ["📤 Upload & Process"], key="app_mode")
         st.markdown("<br><br><hr style='border-color: #1e293b;'>", unsafe_allow_html=True)
         
-        # Printer controls in sidebar
-        if st.button("🖨️ Open Printer App", use_container_width=True, key="open_printer"):
-            success, msg = open_printer_app()
+        # ✅ UPDATED: Printer controls in sidebar
+        if st.button("🖨️ Test Print", use_container_width=True, key="sidebar_test_print"):
+            test_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+            doc = SimpleDocTemplate(test_pdf.name)
+            styles = getSampleStyleSheet()
+            doc.build([Paragraph("Test from Deep CSC", styles["Normal"])])
+            
+            success, msg = print_pdf_file(test_pdf.name)
             if success:
                 st.success(msg)
             else:
                 st.error(msg)
         
-        if st.button("📷 Start Scanning", use_container_width=True, key="sidebar_scan", type="primary"):
-            success, msg = scan_from_printer()
+        if st.button("📷 Open Scanner", use_container_width=True, key="sidebar_scan", type="primary"):
+            success, msg = open_windows_scanner()
             if success:
                 st.success(msg)
             else:
