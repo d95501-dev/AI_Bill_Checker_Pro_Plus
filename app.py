@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageFilter, ImageOps, ImageEnhance
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
@@ -65,7 +65,7 @@ DB_PATH = "bills.db"
 MAX_PDF_PAGES = 1
 PDF_DPI = 200
 PROCESSING_TIMEOUT_SECONDS = 30
-VISION_TIMEOUT_SECONDS = 15
+VISION_TIMEOUT_SECONDS = 20
 VISION_RETRY_COUNT = 2
 
 
@@ -223,9 +223,7 @@ def apply_css():
             border-radius: 12px !important;
             border: none !important;
         }
-        [data-testid="stSidebar"] * {
-            color: #f8fafc !important;
-        }
+        [data-testid="stSidebar"] * { color: #f8fafc !important; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -349,6 +347,19 @@ def image_to_bytes(image):
     return buf.getvalue()
 
 
+def preprocess_image_for_ocr(image):
+    img = image.convert("RGB")
+    img = ImageOps.exif_transpose(img)
+    img = ImageOps.grayscale(img)
+    img = ImageEnhance.Contrast(img).enhance(2.0)
+    img = ImageEnhance.Sharpness(img).enhance(1.5)
+    img = img.filter(ImageFilter.SHARPEN)
+    if img.width < 2200:
+        ratio = 2200 / img.width
+        img = img.resize((int(img.width * ratio), int(img.height * ratio)))
+    return img.convert("RGB")
+
+
 def heuristic_parse_from_text(text):
     text = text or ""
     lines = [x.strip() for x in text.splitlines() if x.strip()]
@@ -423,7 +434,24 @@ def analyze_perplexity(api_key, image):
     return parse_json_from_response(r.json()["choices"][0]["message"]["content"])
 
 
-def safe_google_vision_detect(client, image_bytes, timeout_seconds=15, retries=2):
+def extract_text_from_vision_response(resp):
+    parts = []
+    try:
+        fta = getattr(resp, "full_text_annotation", None)
+        if fta and getattr(fta, "text", ""):
+            parts.append(fta.text)
+    except Exception:
+        pass
+    try:
+        tta = getattr(resp, "text_annotations", None)
+        if tta and len(tta) > 0:
+            parts.append(tta[0].description or "")
+    except Exception:
+        pass
+    return "\n".join([p for p in parts if p and p.strip()]).strip()
+
+
+def safe_google_vision_detect(client, image_bytes, timeout_seconds=20, retries=2):
     img = vision.Image(content=image_bytes)
     last_err = None
     for _ in range(retries + 1):
@@ -438,13 +466,14 @@ def safe_google_vision_detect(client, image_bytes, timeout_seconds=15, retries=2
 
 
 def analyze_google_vision(client, image):
+    image = preprocess_image_for_ocr(image)
     b = image_to_bytes(image)
     resp = safe_google_vision_detect(client, b, timeout_seconds=VISION_TIMEOUT_SECONDS, retries=VISION_RETRY_COUNT)
-    text = getattr(resp, "full_text_annotation", None)
-    extracted = getattr(text, "text", "") if text else ""
-    if not extracted.strip():
-        return heuristic_parse_from_text("")
-    return heuristic_parse_from_text(extracted)
+    extracted = extract_text_from_vision_response(resp)
+    parsed = heuristic_parse_from_text(extracted)
+    if not parsed.get("shop_name") and not parsed.get("bill_date") and not parsed.get("total"):
+        raise RuntimeError("OCR returned empty or unusable text")
+    return parsed
 
 
 def analyze_document_ai(image):
@@ -474,7 +503,17 @@ def analyze_with_auto_fallback(model_bundle, image):
     provider = st.session_state.get("selected_provider", "Google Vision OCR")
     try:
         if provider == "Google Vision OCR" and model_bundle.get("vision_client") and st.session_state.get("vision_enabled", True):
-            return analyze_google_vision(model_bundle["vision_client"], image)
+            try:
+                return analyze_google_vision(model_bundle["vision_client"], image)
+            except Exception:
+                st.warning("Google Vision failed, switching to fallback provider.")
+                if model_bundle.get("gemini") and can_try_gemini():
+                    return analyze_gemini(model_bundle["gemini"], preprocess_image_for_ocr(image))
+                if model_bundle.get("openai"):
+                    return analyze_openai(model_bundle["openai"], preprocess_image_for_ocr(image))
+                if model_bundle.get("perplexity_key") and st.session_state.get("perplexity_enabled", False):
+                    return analyze_perplexity(model_bundle["perplexity_key"], preprocess_image_for_ocr(image))
+                return heuristic_parse_from_text("")
 
         if provider == "Google Document AI" and st.session_state.get("docai_enabled", False):
             return analyze_document_ai(image)
@@ -483,31 +522,19 @@ def analyze_with_auto_fallback(model_bundle, image):
             return analyze_textract(model_bundle["textract_client"], image)
 
         if provider == "Gemini" and model_bundle.get("gemini") and can_try_gemini():
-            try:
-                result = analyze_gemini(model_bundle["gemini"], image)
-                st.session_state.gemini_available = True
-                st.session_state.last_gemini_error_time = None
-                st.session_state.gemini_retry_count = 0
-                return result
-            except Exception as e:
-                st.session_state.gemini_available = False
-                st.session_state.last_gemini_error_time = datetime.now()
-                st.session_state.gemini_retry_count += 1
-                raise e
+            return analyze_gemini(model_bundle["gemini"], preprocess_image_for_ocr(image))
 
         if provider == "OpenAI" and model_bundle.get("openai"):
-            return analyze_openai(model_bundle["openai"], image)
+            return analyze_openai(model_bundle["openai"], preprocess_image_for_ocr(image))
 
         if provider == "Perplexity Verify" and model_bundle.get("perplexity_key") and st.session_state.get("perplexity_enabled", False):
-            return analyze_perplexity(model_bundle["perplexity_key"], image)
+            return analyze_perplexity(model_bundle["perplexity_key"], preprocess_image_for_ocr(image))
 
         raise RuntimeError(f"Provider not available or disabled: {provider}")
 
     except Exception as e:
-        if provider == "Google Vision OCR":
-            st.warning("Google Vision failed, using heuristic fallback.")
-            return heuristic_parse_from_text("")
-        raise e
+        st.warning(f"OCR fallback used: {e}")
+        return heuristic_parse_from_text("")
 
 
 def check_printer_status():
