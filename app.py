@@ -55,6 +55,7 @@ try:
     import win32print
     WINDOWS_PRINTER_AVAILABLE = True
 except Exception:
+    win32print = None
     WINDOWS_PRINTER_AVAILABLE = False
 
 import warnings
@@ -171,6 +172,7 @@ def init_runtime_state():
         "vision_enabled": True,
         "textract_enabled": True,
         "scanning_active": False,
+        "selected_printer": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -532,6 +534,56 @@ def check_printer_status():
         return False, str(e), "error"
 
 
+def get_windows_printers():
+    if sys.platform != "win32" or win32print is None:
+        return []
+    printers = []
+    for p in win32print.EnumPrinters(2):
+        printers.append(p[2])
+    return printers
+
+
+def get_default_printer():
+    if sys.platform != "win32" or win32print is None:
+        return None
+    try:
+        return win32print.GetDefaultPrinter()
+    except Exception:
+        return None
+
+
+def render_printer_selector():
+    if sys.platform != "win32" or win32print is None:
+        st.info("Windows only feature")
+        return None
+
+    printers = get_windows_printers()
+    if not printers:
+        st.warning("No Windows printers found.")
+        return None
+
+    default_printer = get_default_printer()
+    default_index = printers.index(default_printer) if default_printer in printers else 0
+
+    selected_printer = st.selectbox(
+        "Select Printer",
+        printers,
+        index=default_index,
+        key="printer_selector",
+    )
+
+    st.caption(f"Current default printer: {default_printer or 'Not set'}")
+    if st.button("Set as Default Printer", use_container_width=True, key="set_default_printer"):
+        try:
+            win32print.SetDefaultPrinter(selected_printer)
+            st.session_state.selected_printer = selected_printer
+            st.success(f"Default printer set to: {selected_printer}")
+        except Exception as e:
+            st.error(f"Failed to set default printer: {e}")
+
+    return selected_printer
+
+
 def print_excel_file(file_path):
     try:
         if sys.platform == "win32":
@@ -859,6 +911,7 @@ def render_upload_module(model_bundle):
     )
 
     show_printer_setup_notice()
+    render_printer_selector()
 
     printer_ok, printer_msg, printer_type = check_printer_status()
 
