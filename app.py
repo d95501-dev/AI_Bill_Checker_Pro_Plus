@@ -3,6 +3,8 @@ import json
 import re
 import sqlite3
 import tempfile
+import subprocess
+import os
 from datetime import datetime
 from io import BytesIO
 
@@ -47,12 +49,14 @@ try:
 except Exception:
     boto3 = None
 
-# ✅ ADDED: Warnings suppression
 import warnings
 warnings.filterwarnings('ignore')
 
 APP_TITLE = "Deep CSC - AI Bill Processor Premium"
 DB_PATH = "bills.db"
+
+PRINTER_EXE_BROTHER = r"C:\Program Files (x86)\Brother\iPrint&Scan\Brother iPrint&Scan.exe"
+PRINTER_EXE_NAPS2 = r"C:\Program Files\NAPS2\NAPS2.exe"
 
 
 def secret_or_default(key, default=""):
@@ -116,6 +120,12 @@ def apply_css():
             padding: 12px 24px !important;
             border-radius: 12px !important;
             border: none !important;
+        }
+        .print-btn {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+        }
+        .scan-btn {
+            background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%) !important;
         }
         </style>
         """,
@@ -491,15 +501,107 @@ def analyze_with_auto_fallback(model_bundle, image):
     raise RuntimeError(f"All providers failed: {last_err}")
 
 
+def check_printer_available(printer_exe):
+    """Check if printer executable exists"""
+    if not printer_exe:
+        return False
+    return os.path.exists(printer_exe)
+
+
+def get_available_printer():
+    """Get available printer executable"""
+    if check_printer_available(PRINTER_EXE_NAPS2):
+        return PRINTER_EXE_NAPS2, "NAPS2"
+    elif check_printer_available(PRINTER_EXE_BROTHER):
+        return PRINTER_EXE_BROTHER, "Brother iPrint&Scan"
+    return None, None
+
+
+def direct_print_excel(file_path):
+    """Directly print Excel file using default printer"""
+    try:
+        import os
+        import subprocess
+        import sys
+        
+        # Windows ke liye direct print
+        if sys.platform == "win32":
+            os.startfile(file_path, "print")
+            return True, "Print command sent to default printer ✓"
+        else:
+            return False, "Direct print only works on Windows"
+    except Exception as e:
+        return False, f"Print failed: {str(e)}"
+
+
+def direct_print_pdf(file_path):
+    """Directly print PDF file"""
+    try:
+        import os
+        import subprocess
+        import sys
+        
+        if sys.platform == "win32":
+            os.startfile(file_path, "print")
+            return True, "Print command sent to default printer ✓"
+        else:
+            return False, "Direct print only works on Windows"
+    except Exception as e:
+        return False, f"Print failed: {str(e)}"
+
+
+def open_printer_app():
+    """Open printer/scanner application"""
+    try:
+        printer_exe, printer_name = get_available_printer()
+        if printer_exe:
+            subprocess.Popen([printer_exe])
+            return True, f"Opened {printer_name}"
+        else:
+            return False, "No printer executable found. Install Brother iPrint&Scan or NAPS2"
+    except Exception as e:
+        return False, f"Failed to open printer: {str(e)}"
+
+
+def scan_from_printer():
+    """Scan from connected printer/scanner"""
+    try:
+        printer_exe, printer_name = get_available_printer()
+        if printer_exe:
+            # NAPS2 ya Brother app open karo scan ke liye
+            subprocess.Popen([printer_exe])
+            return True, f"{printer_name} opened. Use app to scan."
+        else:
+            return False, "No scanner found. Install Brother iPrint&Scan or NAPS2"
+    except Exception as e:
+        return False, f"Scan failed: {str(e)}"
+
+
 def export_payload(df, base_name, widget_key):
     try:
         buffer = BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name="Data")
+        
+        # Save Excel file temporarily for printing
+        temp_excel = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+        temp_excel.write(buffer.getvalue())
+        temp_excel.close()
+        
         st.download_button("📥 Export Excel Data Sheets", data=buffer.getvalue(), file_name=f"{base_name}.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key=f"excel_{widget_key}")
-    except Exception:
+        
+        # Direct print button
+        print_success, print_msg = direct_print_excel(temp_excel.name)
+        if print_success:
+            st.success(print_msg, icon="🖨️")
+            st.info(f"Excel file saved to: {temp_excel.name}", icon="📁")
+        else:
+            st.warning(print_msg, icon="⚠️")
+            
+    except Exception as e:
         csv_data = df.to_csv(index=False).encode("utf-8")
         st.download_button("📥 Download CSV Instead", data=csv_data, file_name=f"{base_name}.csv", mime="text/csv", use_container_width=True, key=f"csv_{widget_key}")
+        st.error(f"Export error: {str(e)}", icon="❌")
 
 
 def export_pdf(shop_name, bill_date, gst_number, bill_total, widget_key):
@@ -513,8 +615,16 @@ def export_pdf(shop_name, bill_date, gst_number, bill_total, widget_key):
         Paragraph(f"Verified Final Amount: INR {bill_total:.2f}", styles["Heading3"]),
     ]
     doc.build(elements)
+    
     with open(pdf_temp.name, "rb") as f:
         st.download_button("📄 Download Sign-off PDF", f.read(), file_name=f"{re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)}_receipt.pdf", mime="application/pdf", use_container_width=True, key=f"pdf_{widget_key}")
+    
+    # Direct print button for PDF
+    print_success, print_msg = direct_print_pdf(pdf_temp.name)
+    if print_success:
+        st.success(print_msg, icon="🖨️")
+    else:
+        st.warning(print_msg, icon="⚠️")
 
 
 def insert_bill(shop, date, gst, total, calc_total, status):
@@ -585,6 +695,57 @@ def render_bill_result(data, source_name, save_to_db=False):
         if insert_bill(shop_name, bill_date, gst_number, bill_total, calculated_total, status_txt):
             st.toast("Saved to DB", icon="💾")
 
+    # Print buttons section
+    st.markdown("### 🖨️ Print & Scan Options")
+    pc1, pc2, pc3 = st.columns(3)
+    
+    with pc1:
+        if st.button("🖨️ Direct Print Excel", use_container_width=True, key=f"print_excel_{safe_source}"):
+            # Export and print Excel
+            try:
+                buffer = BytesIO()
+                with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+                    df.to_excel(writer, index=False, sheet_name="Data")
+                temp_excel = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+                temp_excel.write(buffer.getvalue())
+                temp_excel.close()
+                
+                print_success, print_msg = direct_print_excel(temp_excel.name)
+                if print_success:
+                    st.success(print_msg)
+                else:
+                    st.error(print_msg)
+            except Exception as e:
+                st.error(f"Print failed: {str(e)}")
+    
+    with pc2:
+        if st.button("📄 Direct Print PDF", use_container_width=True, key=f"print_pdf_{safe_source}"):
+            # Create and print PDF
+            pdf_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+            doc = SimpleDocTemplate(pdf_temp.name)
+            styles = getSampleStyleSheet()
+            elements = [
+                Paragraph(f"Invoice Summary: {shop_name}", styles["Title"]),
+                Spacer(1, 10),
+                Paragraph(f"Date: {bill_date} | GSTIN: {gst_number}", styles["Normal"]),
+                Paragraph(f"Verified Final Amount: INR {bill_total:.2f}", styles["Heading3"]),
+            ]
+            doc.build(elements)
+            
+            print_success, print_msg = direct_print_pdf(pdf_temp.name)
+            if print_success:
+                st.success(print_msg)
+            else:
+                st.error(print_msg)
+    
+    with pc3:
+        if st.button("📷 Scan from Printer", use_container_width=True, key=f"scan_{safe_source}", type="primary"):
+            scan_success, scan_msg = scan_from_printer()
+            if scan_success:
+                st.success(scan_msg)
+            else:
+                st.error(scan_msg)
+
     export_payload(df, safe_shop + "_ledger", safe_source)
     export_pdf(shop_name, bill_date, gst_number, bill_total, safe_source)
 
@@ -613,7 +774,18 @@ def make_excel_download(df, filename, label="📥 Download Excel", key="excel_do
         buffer = BytesIO()
         with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
             df.to_excel(writer, index=False, sheet_name="Batch Summary")
+        
+        # Save for printing
+        temp_excel = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
+        temp_excel.write(buffer.getvalue())
+        temp_excel.close()
+        
         st.download_button(label, data=buffer.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key=key)
+        
+        # Direct print
+        print_success, print_msg = direct_print_excel(temp_excel.name)
+        if print_success:
+            st.success(f"🖨️ {print_msg}")
     except Exception:
         csv_data = df.to_csv(index=False).encode("utf-8")
         st.download_button("📥 Download CSV Instead", data=csv_data, file_name=filename.replace(".xlsx", ".csv"), mime="text/csv", use_container_width=True, key=key + "_csv")
@@ -638,6 +810,23 @@ def render_upload_module(model_bundle):
         '<div class="deep-csc-header"><div class="branding-text"><h1>🧾 AI Multi-Bill OCR Processor</h1><p style="color: #94a3b8; margin: 5px 0 0 0;">Automated structural data parsing pipeline powered by multiple providers.</p></div><div class="csc-meta-badge">📍 <b>Deep Digital Seva Kendra</b><br>👤 Owner: Deepak | ID: 256423250015</div><div class="branding-badge">Deep CSC AI</div></div>',
         unsafe_allow_html=True,
     )
+
+    # Printer/Scanner status
+    printer_exe, printer_name = get_available_printer()
+    if printer_exe:
+        st.success(f"🖨️ **Printer/Scanner Ready:** {printer_name} detected ✓", icon="✅")
+    else:
+        st.warning("⚠️ **Printer not detected**. Install Brother iPrint&Scan or NAPS2 for scanning", icon="⚠️")
+    
+    # Quick scan button
+    if st.button("📷 Quick Scan from Printer", use_container_width=True, key="quick_scan", type="primary"):
+        scan_success, scan_msg = scan_from_printer()
+        if scan_success:
+            st.success(scan_msg)
+            # After scan, user can upload the scanned image
+            st.info("Use the scanned image from your printer app to upload below", icon="ℹ️")
+        else:
+            st.error(scan_msg)
 
     providers = ["Google Vision OCR", "Google Document AI", "AWS Textract", "Gemini", "OpenAI", "Perplexity Verify"]
     provider = st.selectbox("Choose provider", providers, index=providers.index(st.session_state.selected_provider) if st.session_state.selected_provider in providers else 0, key="provider_select")
@@ -742,7 +931,32 @@ def main():
 
         st.markdown(f"<p style='color:#cbd5e1; font-size:14px; margin-left:5px;'>Operator: <b style='color:#38bdf8;'>{DEFAULT_USERNAME} (Deepak)</b></p>", unsafe_allow_html=True)
         st.markdown(f"<p style='color:#cbd5e1; font-size:13px; margin-left:5px;'>Gemini state: <b>{'Available' if st.session_state.gemini_available else 'Fallback mode'}</b></p>", unsafe_allow_html=True)
+        
+        # Printer status in sidebar
+        printer_exe, printer_name = get_available_printer()
+        if printer_name:
+            st.markdown(f"<p style='color:#10b981; font-size:13px; margin-left:5px;'>🖨️ Printer: <b style='color:#10b981;'>{printer_name}</b></p>", unsafe_allow_html=True)
+        else:
+            st.markdown(f"<p style='color:#f59e0b; font-size:13px; margin-left:5px;'>⚠️ Printer: <b style='color:#f59e0b;'>Not detected</b></p>", unsafe_allow_html=True)
+        
         st.selectbox("Navigate System", ["📤 Upload & Process"], key="app_mode")
+        st.markdown("<br><br><hr style='border-color: #1e293b;'>", unsafe_allow_html=True)
+        
+        # Printer controls in sidebar
+        if st.button("🖨️ Open Printer App", use_container_width=True, key="open_printer"):
+            success, msg = open_printer_app()
+            if success:
+                st.success(msg)
+            else:
+                st.error(msg)
+        
+        if st.button("📷 Start Scanning", use_container_width=True, key="sidebar_scan", type="primary"):
+            success, msg = scan_from_printer()
+            if success:
+                st.success(msg)
+            else:
+                st.error(msg)
+        
         st.markdown("<br><br><hr style='border-color: #1e293b;'>", unsafe_allow_html=True)
         if st.button("🚪 Terminate Session", use_container_width=True, key="terminate_session"):
             terminate_session()
