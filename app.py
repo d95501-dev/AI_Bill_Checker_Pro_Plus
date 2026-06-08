@@ -149,8 +149,7 @@ def terminate_session():
 def apply_theme_css():
     theme_mode = st.session_state.get("theme_mode", "light")
     if theme_mode == "dark":
-        st.markdown(
-            """
+        st.markdown("""
             <style>
             .stApp { background: #0b1220; color: #e5e7eb; }
             section[data-testid="stSidebar"] { background: #0f172a; }
@@ -158,25 +157,19 @@ def apply_theme_css():
             .stButton>button { background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important; color: white !important; }
             .stDataFrame, .stMarkdown, .stText { color: #e5e7eb !important; }
             </style>
-            """,
-            unsafe_allow_html=True,
-        )
+        """, unsafe_allow_html=True)
     else:
-        st.markdown(
-            """
+        st.markdown("""
             <style>
             .stApp { background: #f8fafc; color: #0f172a; }
             section[data-testid="stSidebar"] { background: #0f172a; }
             section[data-testid="stSidebar"] * { color: #f8fafc !important; }
             </style>
-            """,
-            unsafe_allow_html=True,
-        )
+        """, unsafe_allow_html=True)
 
 
 def apply_css():
-    st.markdown(
-        """
+    st.markdown("""
         <style>
         .deep-csc-header {
             background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #311042 100%);
@@ -207,9 +200,7 @@ def apply_css():
             border: none !important;
         }
         </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    """, unsafe_allow_html=True)
 
 
 @st.cache_resource
@@ -270,15 +261,12 @@ def setup_docai():
     if not project_id or not processor_id:
         return None, None
     client = documentai.DocumentProcessorServiceClient()
-    name = client.processor_path(project_id, location, processor_id)
-    return client, name
+    return client, client.processor_path(project_id, location, processor_id)
 
 
 def get_drive_service():
     service_account_file = secret_or_default("GOOGLE_SERVICE_ACCOUNT_FILE", "service_account.json")
-    if service_account is None or build is None:
-        return None
-    if not os.path.exists(service_account_file):
+    if service_account is None or build is None or not os.path.exists(service_account_file):
         return None
     creds = service_account.Credentials.from_service_account_file(
         service_account_file,
@@ -294,9 +282,9 @@ def upload_to_drive(local_path, drive_name=None, mime_type="application/octet-st
     service = get_drive_service()
     if service is None or MediaFileUpload is None:
         return None
-    file_metadata = {"name": drive_name or os.path.basename(local_path), "parents": [folder_id]}
+    metadata = {"name": drive_name or os.path.basename(local_path), "parents": [folder_id]}
     media = MediaFileUpload(local_path, mimetype=mime_type, resumable=True)
-    return service.files().create(body=file_metadata, media_body=media, fields="id, name, webViewLink").execute()
+    return service.files().create(body=metadata, media_body=media, fields="id, name, webViewLink").execute()
 
 
 def validate_gst(gst_str):
@@ -321,9 +309,9 @@ def parse_json_from_response(response_text):
     if not response_text:
         raise ValueError("Empty response from model")
     raw = response_text.strip().replace("```json", "").replace("```", "").strip()
-    match = re.search(r"\{.*\}", raw, re.DOTALL)
-    if match:
-        raw = match.group(0)
+    m = re.search(r"\{.*\}", raw, re.DOTALL)
+    if m:
+        raw = m.group(0)
     return json.loads(raw)
 
 
@@ -340,8 +328,7 @@ def can_try_gemini():
     last_error = st.session_state.get("last_gemini_error_time")
     if not last_error:
         return True
-    cooldown = st.session_state.get("gemini_cooldown_seconds", 900)
-    return (datetime.now() - last_error).total_seconds() >= cooldown
+    return (datetime.now() - last_error).total_seconds() >= st.session_state.get("gemini_cooldown_seconds", 900)
 
 
 def is_gemini_quota_error(err):
@@ -380,22 +367,17 @@ def convert_pdf_to_images(file_bytes):
         images = []
         for page in doc:
             pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            images.append(img)
+            images.append(Image.frombytes("RGB", [pix.width, pix.height], pix.samples))
         doc.close()
         return images
-
     if pdfium is not None:
         pdf = pdfium.PdfDocument(file_bytes)
         images = []
         for i in range(len(pdf)):
-            page = pdf[i]
-            images.append(page.render(scale=2).to_pil().convert("RGB"))
+            images.append(pdf[i].render(scale=2).to_pil().convert("RGB"))
         return images
-
     if convert_from_bytes is not None:
         return convert_from_bytes(file_bytes, dpi=200)
-
     raise RuntimeError("No PDF rendering library available.")
 
 
@@ -411,9 +393,7 @@ def heuristic_parse_from_text(text):
             shop_name = ln[:80]
             break
 
-    gst_number = None
-    bill_date = None
-    total = None
+    gst_number, bill_date, total = None, None, None
 
     m = re.search(r"\bGSTIN[:\s]*([0-9A-Z]{15})\b", text, re.I)
     if m:
@@ -440,8 +420,7 @@ def heuristic_parse_from_text(text):
 
 
 def extract_vision_text(vision_client, image):
-    b = image_to_bytes(image)
-    img = vision.Image(content=b)
+    img = vision.Image(content=image_to_bytes(image))
     resp = vision_client.document_text_detection(image=img)
     text = ""
     if getattr(resp, "full_text_annotation", None) and getattr(resp.full_text_annotation, "text", ""):
@@ -473,16 +452,14 @@ def analyze_with_auto_fallback(model_bundle, image):
     for provider in providers:
         try:
             if provider == "Gemini" and model_bundle.get("gemini") and can_try_gemini():
-                data, err = try_gemini(model_bundle["gemini"], image)
+                data, _ = try_gemini(model_bundle["gemini"], image)
                 if data:
                     return data
                 continue
-
             elif provider == "Google Vision OCR" and model_bundle.get("vision_client") and st.session_state.get("vision_enabled", True):
                 text = extract_vision_text(model_bundle["vision_client"], image)
                 if text.strip():
                     return heuristic_parse_from_text(text)
-
             elif provider == "Google Document AI" and model_bundle.get("docai_client") and model_bundle.get("docai_name") and st.session_state.get("docai_enabled", True):
                 raw_document = documentai.RawDocument(content=image_to_bytes(image), mime_type="image/jpeg")
                 request = documentai.ProcessRequest(name=model_bundle["docai_name"], raw_document=raw_document)
@@ -490,7 +467,6 @@ def analyze_with_auto_fallback(model_bundle, image):
                 text = getattr(result.document, "text", "") or ""
                 if text.strip():
                     return heuristic_parse_from_text(text)
-
             elif provider == "AWS Textract" and model_bundle.get("textract_client") and st.session_state.get("textract_enabled", True):
                 resp = model_bundle["textract_client"].analyze_expense(Document={"Bytes": image_to_bytes(image)})
                 text_parts = []
@@ -500,7 +476,6 @@ def analyze_with_auto_fallback(model_bundle, image):
                 text = "\n".join(text_parts)
                 if text.strip():
                     return heuristic_parse_from_text(text)
-
             elif provider == "OpenAI" and model_bundle.get("openai"):
                 b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
                 resp = model_bundle["openai"].chat.completions.create(
@@ -512,7 +487,6 @@ def analyze_with_auto_fallback(model_bundle, image):
                     response_format={"type": "json_object"},
                 )
                 return parse_json_from_response(resp.choices[0].message.content)
-
             elif provider == "Perplexity" and model_bundle.get("perplexity") and st.session_state.get("perplexity_enabled", True):
                 b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
                 resp = model_bundle["perplexity"].chat.completions.create(
@@ -524,10 +498,8 @@ def analyze_with_auto_fallback(model_bundle, image):
                     temperature=0.0,
                 )
                 return parse_json_from_response(resp.choices[0].message.content)
-
         except Exception:
             continue
-
     return heuristic_parse_from_text("")
 
 
@@ -558,8 +530,7 @@ def render_bill_result(data, source_name, save_to_db=False, upload_drive=True):
     gst_number = data.get("gst_number") or "N/A"
 
     if not shop_name and raw_text:
-        first_lines = [x.strip() for x in raw_text.splitlines() if x.strip()]
-        for ln in first_lines[:8]:
+        for ln in [x.strip() for x in raw_text.splitlines() if x.strip()][:8]:
             if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
                 shop_name = ln[:80]
                 break
@@ -581,13 +552,12 @@ def render_bill_result(data, source_name, save_to_db=False, upload_drive=True):
 
     if not has_meaningful_data:
         status = "Needs Review"
+    elif bill_total > 0 and abs(calculated_total - bill_total) < 1:
+        status = "Matched"
+    elif bill_total > 0:
+        status = "Mismatch"
     else:
-        if bill_total > 0 and abs(calculated_total - bill_total) < 1:
-            status = "Matched"
-        elif bill_total > 0:
-            status = "Mismatch"
-        else:
-            status = "Needs Review"
+        status = "Needs Review"
 
     st.markdown(f"### 🏪 Vendor: `{shop_name}`")
     c1, c2 = st.columns(2)
@@ -644,8 +614,7 @@ def build_batch_summary(results):
             shop = str(d.get("shop_name") or "").strip()
             bill_date = str(d.get("bill_date") or "").strip()
             if not shop and raw_text:
-                first_lines = [x.strip() for x in raw_text.splitlines() if x.strip()]
-                for ln in first_lines[:8]:
+                for ln in [x.strip() for x in raw_text.splitlines() if x.strip()][:8]:
                     if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
                         shop = ln[:80]
                         break
@@ -671,10 +640,16 @@ def make_excel_download(df, filename, label="📥 Download Excel", key="excel_do
     st.download_button(label, data=buffer.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key=key)
 
 
-def render_theme_toggle():
+def render_theme_toggle(location="main"):
     if "theme_mode" not in st.session_state:
         st.session_state["theme_mode"] = "light"
-    mode = st.radio("Theme", ["light", "dark"], horizontal=True, index=0 if st.session_state.get("theme_mode", "light") == "light" else 1, key="theme_radio")
+    mode = st.radio(
+        "Theme",
+        ["light", "dark"],
+        horizontal=True,
+        index=0 if st.session_state.get("theme_mode", "light") == "light" else 1,
+        key=f"theme_radio_{location}",
+    )
     if mode != st.session_state.get("theme_mode", "light"):
         st.session_state["theme_mode"] = mode
         st.rerun()
@@ -699,10 +674,7 @@ def render_upload_module():
 
     with tabs[0]:
         providers = ["Google Vision OCR", "Google Document AI", "AWS Textract", "Gemini", "OpenAI", "Perplexity"]
-        default_provider = "Gemini"
-        default_index = providers.index(default_provider) if default_provider in providers else 0
-        st.session_state.selected_provider = st.selectbox("Select OCR Provider", providers, index=default_index, key="provider_selectbox")
-
+        st.session_state.selected_provider = st.selectbox("Select OCR Provider", providers, index=providers.index("Gemini"), key="provider_selectbox")
         uploaded_file = st.file_uploader("Upload Bill Image or PDF", type=["jpg", "jpeg", "png", "pdf"])
 
         vision_client = setup_google_vision()
@@ -724,7 +696,6 @@ def render_upload_module():
 
         if uploaded_file:
             file_bytes = uploaded_file.read()
-
             if uploaded_file.name.lower().endswith(".pdf"):
                 if st.button("Process PDF", use_container_width=True):
                     try:
@@ -732,7 +703,6 @@ def render_upload_module():
                     except Exception as e:
                         st.error(f"PDF convert nahi ho paaya: {e}")
                         pages = []
-
                     results = []
                     for idx, page_img in enumerate(pages, start=1):
                         try:
@@ -740,7 +710,6 @@ def render_upload_module():
                             results.append({"page": idx, "source": uploaded_file.name, "data": data, "error": None})
                         except Exception as e:
                             results.append({"page": idx, "source": uploaded_file.name, "data": None, "error": str(e)})
-
                     df = build_batch_summary(results)
                     st.dataframe(df, use_container_width=True, hide_index=True)
                     make_excel_download(df, "batch_summary.xlsx")
@@ -759,7 +728,7 @@ def render_upload_module():
 
     with tabs[2]:
         st.subheader("Settings")
-        render_theme_toggle()
+        render_theme_toggle("settings")
         st.caption("Provider order is sequential and fail-fast for speed.")
 
 
@@ -786,7 +755,7 @@ def main():
             """,
             unsafe_allow_html=True,
         )
-        render_theme_toggle()
+        render_theme_toggle("sidebar")
         if st.button("Logout", use_container_width=True):
             terminate_session()
 
