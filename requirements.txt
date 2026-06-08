@@ -12,3 +12,4 @@ pytesseract
 google-cloud-vision
 google-cloud-documentai
 boto3
+pypdfium2
