@@ -97,7 +97,7 @@ def init_auth():
 
 def init_runtime_state():
     defaults = {
-        "selected_provider": "Google Vision OCR",
+        "selected_provider": "Gemini",
         "gemini_available": True,
         "last_gemini_error_time": None,
         "gemini_cooldown_seconds": 900,
@@ -165,8 +165,6 @@ def apply_css():
     st.markdown(
         """
         <style>
-        .main { background-color: #f8fafc; }
-        h1, h2, h3, h4 { font-family: system-ui, sans-serif !important; color: #0f172a !important; font-weight: 800 !important; }
         .deep-csc-header {
             background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #311042 100%);
             padding: 30px; border-radius: 24px; margin-bottom: 20px;
@@ -315,6 +313,11 @@ def can_try_gemini():
     return (datetime.now() - last_error).total_seconds() >= cooldown
 
 
+def is_gemini_quota_error(err):
+    msg = str(err).lower()
+    return ("429" in msg) or ("quota" in msg) or ("resource_exhausted" in msg) or ("rate limit" in msg)
+
+
 def build_schema_prompt():
     return """
 You are a document extraction specialist.
@@ -407,19 +410,40 @@ def heuristic_parse_from_text(text):
     }
 
 
+def try_gemini(model, image):
+    try:
+        resp = model.generate_content([build_schema_prompt(), image])
+        data = parse_json_from_response(getattr(resp, "text", ""))
+        st.session_state.gemini_available = True
+        st.session_state.last_gemini_error_time = None
+        st.session_state.gemini_retry_count = 0
+        return data, None
+    except Exception as e:
+        if is_gemini_quota_error(e):
+            st.session_state.gemini_available = False
+            st.session_state.last_gemini_error_time = datetime.now()
+        return None, e
+
+
 def analyze_with_auto_fallback(model_bundle, image):
     providers = [
+        "Gemini",
         "Google Vision OCR",
         "Google Document AI",
         "AWS Textract",
-        "Gemini",
         "OpenAI",
         "Perplexity",
     ]
 
     for provider in providers:
         try:
-            if provider == "Google Vision OCR" and model_bundle.get("vision_client") and st.session_state.get("vision_enabled", True):
+            if provider == "Gemini" and model_bundle.get("gemini") and can_try_gemini():
+                data, err = try_gemini(model_bundle["gemini"], image)
+                if data:
+                    return data
+                continue
+
+            elif provider == "Google Vision OCR" and model_bundle.get("vision_client") and st.session_state.get("vision_enabled", True):
                 img = vision.Image(content=image_to_bytes(image))
                 resp = model_bundle["vision_client"].document_text_detection(image=img)
                 text = getattr(getattr(resp, "full_text_annotation", None), "text", "") or ""
@@ -445,14 +469,6 @@ def analyze_with_auto_fallback(model_bundle, image):
                 text = "\n".join(text_parts)
                 if text.strip():
                     return heuristic_parse_from_text(text)
-
-            elif provider == "Gemini" and model_bundle.get("gemini") and can_try_gemini():
-                resp = model_bundle["gemini"].generate_content([build_schema_prompt(), image])
-                data = parse_json_from_response(getattr(resp, "text", ""))
-                st.session_state.gemini_available = True
-                st.session_state.last_gemini_error_time = None
-                st.session_state.gemini_retry_count = 0
-                return data
 
             elif provider == "OpenAI" and model_bundle.get("openai"):
                 b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
@@ -666,7 +682,14 @@ def render_upload_module():
 
     with tabs[0]:
         providers = ["Google Vision OCR", "Google Document AI", "AWS Textract", "Gemini", "OpenAI", "Perplexity"]
-        st.session_state.selected_provider = st.selectbox("Select OCR Provider", providers, index=0)
+        default_provider = "Gemini"
+        default_index = providers.index(default_provider) if default_provider in providers else 0
+        st.session_state.selected_provider = st.selectbox(
+            "Select OCR Provider",
+            providers,
+            index=default_index,
+            key="provider_selectbox",
+        )
 
         uploaded_file = st.file_uploader("Upload Bill Image or PDF", type=["jpg", "jpeg", "png", "pdf"])
 
