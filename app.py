@@ -11,6 +11,11 @@ import streamlit as st
 from PIL import Image
 
 try:
+    import fitz
+except Exception:
+    fitz = None
+
+try:
     import pypdfium2 as pdfium
 except Exception:
     pdfium = None
@@ -142,7 +147,8 @@ def terminate_session():
 
 
 def apply_theme_css():
-    if st.session_state.get("theme_mode", "light") == "dark":
+    theme_mode = st.session_state.get("theme_mode", "light")
+    if theme_mode == "dark":
         st.markdown(
             """
             <style>
@@ -369,6 +375,16 @@ def image_to_bytes(image):
 
 
 def convert_pdf_to_images(file_bytes):
+    if fitz is not None:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        images = []
+        for page in doc:
+            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+            images.append(img)
+        doc.close()
+        return images
+
     if pdfium is not None:
         pdf = pdfium.PdfDocument(file_bytes)
         images = []
@@ -376,8 +392,10 @@ def convert_pdf_to_images(file_bytes):
             page = pdf[i]
             images.append(page.render(scale=2).to_pil().convert("RGB"))
         return images
+
     if convert_from_bytes is not None:
         return convert_from_bytes(file_bytes, dpi=200)
+
     raise RuntimeError("No PDF rendering library available.")
 
 
@@ -656,18 +674,8 @@ def make_excel_download(df, filename, label="📥 Download Excel", key="excel_do
 def render_theme_toggle():
     if "theme_mode" not in st.session_state:
         st.session_state["theme_mode"] = "light"
-
-    current_theme = st.session_state.get("theme_mode", "light")
-
-    mode = st.radio(
-        "Theme",
-        ["light", "dark"],
-        horizontal=True,
-        index=0 if current_theme == "light" else 1,
-        key="theme_selector",
-    )
-
-    if mode != current_theme:
+    mode = st.radio("Theme", ["light", "dark"], horizontal=True, index=0 if st.session_state.get("theme_mode", "light") == "light" else 1, key="theme_radio")
+    if mode != st.session_state.get("theme_mode", "light"):
         st.session_state["theme_mode"] = mode
         st.rerun()
 
@@ -751,14 +759,11 @@ def render_upload_module():
 
     with tabs[2]:
         st.subheader("Settings")
-        st.caption("Theme control is available in the sidebar.")
+        render_theme_toggle()
         st.caption("Provider order is sequential and fail-fast for speed.")
 
 
 def main():
-    if "theme_mode" not in st.session_state:
-        st.session_state["theme_mode"] = "light"
-
     setup_page()
     init_db()
     init_auth()
