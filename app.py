@@ -1,5 +1,6 @@
 import os
 import json
+import base64
 import tempfile
 from pathlib import Path
 from typing import List, Dict, Any
@@ -10,6 +11,40 @@ from PIL import Image
 
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
+
+st.set_page_config(page_title="AI Bill Checker Pro Plus", layout="centered")
+
+def set_background(image_path: str):
+    if not os.path.exists(image_path):
+        return
+    with open(image_path, "rb") as f:
+        encoded = base64.b64encode(f.read()).decode()
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{
+            background-image: url("data:image/jpg;base64,{encoded}");
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+            background-attachment: fixed;
+        }}
+        [data-testid="stAppViewContainer"] {{
+            background: transparent;
+        }}
+        [data-testid="stHeader"] {{
+            background: rgba(0,0,0,0);
+        }}
+        .main-card {{
+            background: rgba(255,255,255,0.90);
+            padding: 28px;
+            border-radius: 16px;
+            box-shadow: 0 4px 18px rgba(0,0,0,0.12);
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True
+    )
 
 def save_uploaded_pdf(uploaded_file):
     temp_dir = tempfile.mkdtemp()
@@ -40,33 +75,30 @@ class PDFProcessor:
         return str(out)
 
 def main():
-    st.set_page_config(page_title="AI Bill Checker Pro Plus", layout="wide")
+    set_background("background.jpg")  # agar file nahi hai to kuchh nahi hoga
+
     st.title("AI Bill Checker Pro Plus")
+    st.write("Upload your bill PDF and process it")
 
-    left, right = st.columns([2, 1])
+    st.markdown('<div class="main-card">', unsafe_allow_html=True)
 
-    with left:
-        uploaded_pdf = st.file_uploader("Upload Bill PDF", type=["pdf"])
-
-    with right:
-        st.write("")
-        st.write("")
-        process_clicked = st.button("Process PDF")
+    uploaded_pdf = st.file_uploader("Upload Bill PDF", type=["pdf"])
 
     if uploaded_pdf:
         pdf_path = save_uploaded_pdf(uploaded_pdf)
         st.info(f"Uploaded: {uploaded_pdf.name}")
         st.write(f"Pages: {PDFProcessor.page_count(pdf_path)}")
 
-        if process_clicked:
-            results = []
+        if st.button("Process PDF"):
             page_total = PDFProcessor.page_count(pdf_path)
-            for i in range(1, page_total + 1):
-                results.append({
+            results = [
+                {
                     "page": i,
                     "provider": "Local PDF Processor",
                     "text": f"Page {i} processed successfully."
-                })
+                }
+                for i in range(1, page_total + 1)
+            ]
 
             result_file = PDFProcessor.save_results(pdf_path, results)
             st.success(f"Done. Extracted {len(results)} page result(s).")
@@ -78,6 +110,8 @@ def main():
                 mime="application/json",
             )
             st.caption(f"Saved at: {result_file}")
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
