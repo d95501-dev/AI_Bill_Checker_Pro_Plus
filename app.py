@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import re
 import sqlite3
 from datetime import datetime
@@ -30,11 +31,6 @@ except Exception:
     OpenAI = None
 
 try:
-    import requests
-except Exception:
-    requests = None
-
-try:
     from google.cloud import vision
 except Exception:
     vision = None
@@ -49,11 +45,22 @@ try:
 except Exception:
     boto3 = None
 
+try:
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
+    from googleapiclient.http import MediaFileUpload
+except Exception:
+    service_account = None
+    build = None
+    MediaFileUpload = None
+
 import warnings
 warnings.filterwarnings("ignore")
 
 APP_TITLE = "Deep CSC - AI Bill Processor Premium"
 DB_PATH = "bills.db"
+OUTPUT_DIR = "output"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 
 def secret_or_default(key, default=""):
@@ -261,6 +268,31 @@ def setup_docai():
     return client, name
 
 
+def get_drive_service():
+    service_account_file = secret_or_default("GOOGLE_SERVICE_ACCOUNT_FILE", "service_account.json")
+    if service_account is None or build is None:
+        return None
+    if not os.path.exists(service_account_file):
+        return None
+    creds = service_account.Credentials.from_service_account_file(
+        service_account_file,
+        scopes=["https://www.googleapis.com/auth/drive"],
+    )
+    return build("drive", "v3", credentials=creds)
+
+
+def upload_to_drive(local_path, drive_name=None, mime_type="application/octet-stream"):
+    folder_id = secret_or_default("DRIVE_FOLDER_ID", "").strip()
+    if not folder_id:
+        return None
+    service = get_drive_service()
+    if service is None or MediaFileUpload is None:
+        return None
+    file_metadata = {"name": drive_name or os.path.basename(local_path), "parents": [folder_id]}
+    media = MediaFileUpload(local_path, mimetype=mime_type, resumable=True)
+    return service.files().create(body=file_metadata, media_body=media, fields="id, name, webViewLink").execute()
+
+
 def validate_gst(gst_str):
     if not gst_str:
         return False, "N/A"
@@ -275,14 +307,7 @@ def normalize_items(items):
         return cleaned
     for it in items:
         if isinstance(it, dict):
-            cleaned.append(
-                {
-                    "name": it.get("name") or "",
-                    "qty": it.get("qty") or "",
-                    "rate": it.get("rate") or "",
-                    "amount": it.get("amount") or "",
-                }
-            )
+            cleaned.append({"name": it.get("name") or "", "qty": it.get("qty") or "", "rate": it.get("rate") or "", "amount": it.get("amount") or ""})
     return cleaned
 
 
@@ -359,19 +384,12 @@ def convert_pdf_to_images(file_bytes):
 def heuristic_parse_from_text(text):
     text = (text or "").strip()
     if not text:
-        return {
-            "shop_name": None,
-            "bill_date": None,
-            "gst_number": None,
-            "items": [],
-            "total": None,
-            "raw_text": "",
-        }
+        return {"shop_name": None, "bill_date": None, "gst_number": None, "items": [], "total": None, "raw_text": ""}
 
     lines = [x.strip() for x in text.splitlines() if x.strip()]
     shop_name = None
-    for ln in lines[:5]:
-        if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount)\b", ln, re.I):
+    for ln in lines[:8]:
+        if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
             shop_name = ln[:80]
             break
 
@@ -400,14 +418,21 @@ def heuristic_parse_from_text(text):
             total = m.group(1)
             break
 
-    return {
-        "shop_name": shop_name,
-        "bill_date": bill_date,
-        "gst_number": gst_number,
-        "items": [],
-        "total": total,
-        "raw_text": text,
-    }
+    return {"shop_name": shop_name, "bill_date": bill_date, "gst_number": gst_number, "items": [], "total": total, "raw_text": text}
+
+
+def extract_vision_text(vision_client, image):
+    b = image_to_bytes(image)
+    img = vision.Image(content=b)
+    resp = vision_client.document_text_detection(image=img)
+    text = ""
+    if getattr(resp, "full_text_annotation", None) and getattr(resp.full_text_annotation, "text", ""):
+        text = resp.full_text_annotation.text.strip()
+    if not text and getattr(resp, "text_annotations", None):
+        anns = resp.text_annotations
+        if anns and getattr(anns[0], "description", ""):
+            text = anns[0].description.strip()
+    return text
 
 
 def try_gemini(model, image):
@@ -426,15 +451,7 @@ def try_gemini(model, image):
 
 
 def analyze_with_auto_fallback(model_bundle, image):
-    providers = [
-        "Gemini",
-        "Google Vision OCR",
-        "Google Document AI",
-        "AWS Textract",
-        "OpenAI",
-        "Perplexity",
-    ]
-
+    providers = ["Gemini", "Google Vision OCR", "Google Document AI", "AWS Textract", "OpenAI", "Perplexity"]
     for provider in providers:
         try:
             if provider == "Gemini" and model_bundle.get("gemini") and can_try_gemini():
@@ -444,9 +461,7 @@ def analyze_with_auto_fallback(model_bundle, image):
                 continue
 
             elif provider == "Google Vision OCR" and model_bundle.get("vision_client") and st.session_state.get("vision_enabled", True):
-                img = vision.Image(content=image_to_bytes(image))
-                resp = model_bundle["vision_client"].document_text_detection(image=img)
-                text = getattr(getattr(resp, "full_text_annotation", None), "text", "") or ""
+                text = extract_vision_text(model_bundle["vision_client"], image)
                 if text.strip():
                     return heuristic_parse_from_text(text)
 
@@ -463,9 +478,7 @@ def analyze_with_auto_fallback(model_bundle, image):
                 text_parts = []
                 for d in resp.get("ExpenseDocuments", []):
                     for sf in d.get("SummaryFields", []):
-                        text_parts.append(
-                            f"{sf.get('Type', {}).get('Text', '')}: {sf.get('ValueDetection', {}).get('Text', '')}"
-                        )
+                        text_parts.append(f"{sf.get('Type', {}).get('Text', '')}: {sf.get('ValueDetection', {}).get('Text', '')}")
                 text = "\n".join(text_parts)
                 if text.strip():
                     return heuristic_parse_from_text(text)
@@ -476,13 +489,7 @@ def analyze_with_auto_fallback(model_bundle, image):
                     model=secret_or_default("OPENAI_MODEL", "gpt-4o-mini"),
                     messages=[
                         {"role": "system", "content": build_schema_prompt()},
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": "Extract invoice JSON from this image."},
-                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
-                            ],
-                        },
+                        {"role": "user", "content": [{"type": "text", "text": "Extract invoice JSON from this image."}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}}]},
                     ],
                     response_format={"type": "json_object"},
                 )
@@ -494,13 +501,7 @@ def analyze_with_auto_fallback(model_bundle, image):
                     model=secret_or_default("PERPLEXITY_MODEL", "sonar-pro"),
                     messages=[
                         {"role": "system", "content": build_schema_prompt()},
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": "Extract invoice JSON from this image."},
-                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
-                            ],
-                        },
+                        {"role": "user", "content": [{"type": "text", "text": "Extract invoice JSON from this image."}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}}]},
                     ],
                     temperature=0.0,
                 )
@@ -525,7 +526,7 @@ def insert_bill(shop, date, gst, total, calc_total, status):
         conn.commit()
 
 
-def render_bill_result(data, source_name, save_to_db=False):
+def render_bill_result(data, source_name, save_to_db=False, upload_drive=True):
     if not isinstance(data, dict):
         st.error("AI se data nahi mil paaya.")
         return
@@ -540,8 +541,8 @@ def render_bill_result(data, source_name, save_to_db=False):
 
     if not shop_name and raw_text:
         first_lines = [x.strip() for x in raw_text.splitlines() if x.strip()]
-        for ln in first_lines[:5]:
-            if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount)\b", ln, re.I):
+        for ln in first_lines[:8]:
+            if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
                 shop_name = ln[:80]
                 break
     if not shop_name:
@@ -588,6 +589,29 @@ def render_bill_result(data, source_name, save_to_db=False):
     if save_to_db:
         insert_bill(shop_name, bill_date, gst_number, bill_total, calculated_total, status)
 
+    if upload_drive:
+        try:
+            out_json = os.path.join(OUTPUT_DIR, f"bill_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
+            payload = {
+                "shop_name": shop_name,
+                "bill_date": bill_date,
+                "gst_number": gst_number,
+                "items": items,
+                "total": bill_total,
+                "calculated_total": calculated_total,
+                "status": status,
+                "source": source_name,
+                "timestamp": datetime.now().isoformat(),
+                "raw_text": raw_text,
+            }
+            with open(out_json, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            uploaded = upload_to_drive(out_json, drive_name=os.path.basename(out_json), mime_type="application/json")
+            if uploaded:
+                st.success(f"Google Drive upload done: {uploaded.get('name', 'file')}")
+        except Exception as e:
+            st.warning(f"Drive upload skipped: {e}")
+
 
 def build_batch_summary(results):
     rows = []
@@ -601,51 +625,24 @@ def build_batch_summary(results):
             total = safe_float(d.get("total", 0))
             shop = str(d.get("shop_name") or "").strip()
             bill_date = str(d.get("bill_date") or "").strip()
-
             if not shop and raw_text:
                 first_lines = [x.strip() for x in raw_text.splitlines() if x.strip()]
-                for ln in first_lines[:5]:
-                    if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount)\b", ln, re.I):
+                for ln in first_lines[:8]:
+                    if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
                         shop = ln[:80]
                         break
             if not shop:
                 shop = "Unknown Shop"
             if not bill_date:
                 bill_date = datetime.now().strftime("%Y-%m-%d")
-
             has_meaningful_data = bool(raw_text) or not tmp_df.empty or total > 0 or shop != "Unknown Shop"
             if not has_meaningful_data:
                 status = "Needs Review"
             else:
                 status = "Matched" if total > 0 and abs(calc_total - total) < 1 else ("Mismatch" if total > 0 else "Needs Review")
-
-            rows.append(
-                {
-                    "page": item.get("page"),
-                    "source": item.get("source"),
-                    "shop_name": shop,
-                    "bill_date": bill_date,
-                    "gst_number": d.get("gst_number") or "N/A",
-                    "bill_total": total,
-                    "calculated_total": calc_total,
-                    "difference": abs(calc_total - total),
-                    "status": status,
-                }
-            )
+            rows.append({"page": item.get("page"), "source": item.get("source"), "shop_name": shop, "bill_date": bill_date, "gst_number": d.get("gst_number") or "N/A", "bill_total": total, "calculated_total": calc_total, "difference": abs(calc_total - total), "status": status})
         else:
-            rows.append(
-                {
-                    "page": item.get("page"),
-                    "source": item.get("source"),
-                    "shop_name": "Unknown Shop",
-                    "bill_date": None,
-                    "gst_number": None,
-                    "bill_total": None,
-                    "calculated_total": None,
-                    "difference": None,
-                    "status": f"Error: {item.get('error')}",
-                }
-            )
+            rows.append({"page": item.get("page"), "source": item.get("source"), "shop_name": "Unknown Shop", "bill_date": None, "gst_number": None, "bill_total": None, "calculated_total": None, "difference": None, "status": f"Error: {item.get('error')}"})
     return pd.DataFrame(rows)
 
 
@@ -684,12 +681,7 @@ def render_upload_module():
         providers = ["Google Vision OCR", "Google Document AI", "AWS Textract", "Gemini", "OpenAI", "Perplexity"]
         default_provider = "Gemini"
         default_index = providers.index(default_provider) if default_provider in providers else 0
-        st.session_state.selected_provider = st.selectbox(
-            "Select OCR Provider",
-            providers,
-            index=default_index,
-            key="provider_selectbox",
-        )
+        st.session_state.selected_provider = st.selectbox("Select OCR Provider", providers, index=default_index, key="provider_selectbox")
 
         uploaded_file = st.file_uploader("Upload Bill Image or PDF", type=["jpg", "jpeg", "png", "pdf"])
 
@@ -737,15 +729,12 @@ def render_upload_module():
                 st.image(image, caption="Uploaded Bill", use_container_width=True)
                 if st.button("Process Image", use_container_width=True):
                     data = analyze_with_auto_fallback(model_bundle, image)
-                    render_bill_result(data, uploaded_file.name, save_to_db=True)
+                    render_bill_result(data, uploaded_file.name, save_to_db=True, upload_drive=True)
 
     with tabs[1]:
         st.subheader("History")
         with sqlite3.connect(DB_PATH, timeout=30) as conn:
-            df = pd.read_sql_query(
-                "SELECT shop_name, bill_date, gst_number, total, calculated_total, status, timestamp FROM bills ORDER BY id DESC LIMIT 50",
-                conn,
-            )
+            df = pd.read_sql_query("SELECT shop_name, bill_date, gst_number, total, calculated_total, status, timestamp FROM bills ORDER BY id DESC LIMIT 50", conn)
         st.dataframe(df, use_container_width=True, hide_index=True)
 
     with tabs[2]:
