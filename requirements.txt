@@ -1,5 +1,5 @@
 streamlit
-PyMuPDF
+pypdfium2
 Pillow
 pandas
 pdf2image
