@@ -1,12 +1,14 @@
 streamlit
-pypdfium2
-Pillow
 pandas
+numpy
+pillow
+reportlab
 pdf2image
 google-generativeai
 openai
 requests
+openpyxl
+pytesseract
 google-cloud-vision
 google-cloud-documentai
 boto3
-openpyxl
