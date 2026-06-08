@@ -1,432 +1,238 @@
+#!/usr/bin/env python3
 import os
 import json
 import base64
+import time
 from pathlib import Path
 from typing import List, Dict, Any
-import fitz  # PyMuPDF
-from pdf2image import convert_from_path
 
-# ==================== CONFIGURATION ====================
-class Config:
-    GCP_CREDENTIALS_PATH = "google_credentials.json"
-    GCP_PROJECT_ID = "your-project-id"
-    AWS_PROFILE = "default"
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "your-gemini-key")
-    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "your-openai-key")
-    PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "your-perplexity-key")
-    OUTPUT_DIR = "extracted_bills"
+import fitz
+from PIL import Image
 
-# ==================== PDF UTILITIES ====================
+OUTPUT_DIR = Path("output")
+OUTPUT_DIR.mkdir(exist_ok=True)
+
 class PDFProcessor:
     @staticmethod
-    def split_pdf_to_pages(pdf_path: str) -> List[fitz.Document]:
-        """Split PDF into individual pages"""
-        doc = fitz.open(pdf_path)
+    def page_count(pdf_path: str) -> int:
+        return len(fitz.open(pdf_path))
+
+    @staticmethod
+    def split_to_single_page_pdfs(pdf_path: str) -> List[bytes]:
+        src = fitz.open(pdf_path)
         pages = []
-        for i in range(len(doc)):
-            new_doc = fitz.open()
-            new_doc.insert_pdf(doc, from_page=i, to_page=i)
-            pages.append(new_doc)
+        for i in range(len(src)):
+            dst = fitz.open()
+            dst.insert_pdf(src, from_page=i, to_page=i)
+            pages.append(dst.tobytes())
         return pages
-    
+
     @staticmethod
-    def pdf_to_images(pdf_path: str, dpi=200) -> List:
-        """Convert PDF pages to images"""
-        images = convert_from_path(pdf_path, dpi=dpi)
-        return images
-    
-    @staticmethod
-    def get_page_count(pdf_path: str) -> int:
-        """Get total pages in PDF"""
+    def pdf_to_images(pdf_path: str, dpi: int = 220) -> List[Image.Image]:
         doc = fitz.open(pdf_path)
-        return len(doc)
+        images = []
+        for page in doc:
+            pix = page.get_pixmap(matrix=fitz.Matrix(dpi / 72, dpi / 72), alpha=False)
+            images.append(Image.frombytes("RGB", [pix.width, pix.height], pix.samples))
+        return images
 
-# ==================== PROVIDER 1: Google Vision OCR ====================
+    @staticmethod
+    def save_results(pdf_path: str, provider: str, results: List[Dict[str, Any]]) -> str:
+        out = OUTPUT_DIR / f"{Path(pdf_path).stem}_{provider.replace(' ', '_')}.json"
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+        return str(out)
+
 class GoogleVisionOCR:
-    def __init__(self):
+    def __init__(self, credentials_path: str | None = None):
         from google.cloud import vision
-        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = Config.GCP_CREDENTIALS_PATH
+        if credentials_path:
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credentials_path
         self.client = vision.ImageAnnotatorClient()
-    
-    def extract_all_bills(self, pdf_path: str) -> List[Dict]:
-        """Extract text from ALL pages of PDF"""
-        from google.cloud import vision
-        import io
-        
-        images = PDFProcessor.pdf_to_images(pdf_path)
-        all_bills = []
-        
-        for i, image in enumerate(images):
-            # Convert PIL image to byte data
-            img_byte_arr = io.BytesIO()
-            image.save(img_byte_arr, format='PNG')
-            img_bytes = img_byte_arr.getvalue()
-            
-            response = self.client.document_text_detection(
-                image=vision.Image(content=img_bytes)
-            )
-            
-            bill_data = {
-                "page": i + 1,
-                "text": response.full_text_annotation.text,
-                "provider": "Google Vision OCR"
-            }
-            all_bills.append(bill_data)
-            print(f"✓ Page {i+1} extracted via Google Vision")
-        
-        return all_bills
 
-# ==================== PROVIDER 2: Google Document AI ====================
+    def extract_all(self, pdf_path: str) -> List[Dict[str, Any]]:
+        from google.cloud import vision
+        results = []
+        for idx, img in enumerate(PDFProcessor.pdf_to_images(pdf_path), start=1):
+            import io
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            resp = self.client.document_text_detection(image=vision.Image(content=buf.getvalue()))
+            results.append({
+                "page": idx,
+                "provider": "Google Vision",
+                "text": getattr(resp.full_text_annotation, "text", "") or ""
+            })
+        return results
+
 class GoogleDocumentAI:
-    def __init__(self):
+    def __init__(self, project_id: str, location: str, processor_id: str):
         from google.cloud import documentai
         self.client = documentai.DocumentProcessorServiceClient()
-        self.processor_name = (
-            f"projects/{Config.GCP_PROJECT_ID}/locations/us/processors/YOUR_PROCESSOR_ID"
-        )
-    
-    def extract_all_bills(self, pdf_path: str) -> List[Dict]:
-        """Process multi-page PDF with Document AI"""
+        self.name = f"projects/{project_id}/locations/{location}/processors/{processor_id}"
+
+    def extract_all(self, pdf_path: str) -> List[Dict[str, Any]]:
         from google.cloud import documentai
-        
-        # Read PDF
-        with open(pdf_path, "rb") as image:
-            content = image.read()
-        
-        document = documentai.Document(
-            gutted_bytes=content,
-            mime_type="application/pdf"
-        )
-        
-        request = documentai.ProcessRequest(
-            name=self.processor_name,
-            raw_document=document
-        )
-        
-        result = self.client.process_document(request=request)
-        document = result.document
-        
-        # All pages are processed together - extract entities
-        bill_data = {
-            "page": 1,  # Document AI processes entire PDF
-            "text": document.text,
-            "entities": [
-                {
-                    "type": entity.type,
-                    "text": document.text[entity.start_offset:entity.end_offset]
-                }
-                for entity in document.entities
-            ],
-            "provider": "Google Document AI",
-            "total_pages": PDFProcessor.get_page_count(pdf_path)
-        }
-        
-        print(f"✓ PDF processed ({bill_data['total_pages']} pages) via Document AI")
-        return [bill_data]
+        with open(pdf_path, "rb") as f:
+            content = f.read()
+        raw_document = documentai.RawDocument(content=content, mime_type="application/pdf")
+        req = documentai.ProcessRequest(name=self.name, raw_document=raw_document)
+        resp = self.client.process_document(request=req)
+        doc = resp.document
+        if getattr(doc, "pages", None):
+            return [{"page": p.page_number, "provider": "Google Document AI", "text": doc.text} for p in doc.pages]
+        return [{"page": 1, "provider": "Google Document AI", "text": doc.text}]
 
-# ==================== PROVIDER 3: AWS Textract ====================
 class AWSTextract:
-    def __init__(self):
+    def __init__(self, region_name: str | None = None):
         import boto3
-        self.client = boto3.client('textract', profile_name=Config.AWS_PROFILE)
-        self.s3_client = boto3.client('s3', profile_name=Config.AWS_PROFILE)
-        self.bucket_name = "your-bucket-name"
-    
-    def extract_all_bills(self, pdf_path: str) -> List[Dict]:
-        """Extract ALL pages using asynchronous Textract"""
-        import boto3
-        import time
-        
-        # Upload PDF to S3
-        file_name = os.path.basename(pdf_path)
-        self.s3_client.upload_file(pdf_path, self.bucket_name, file_name)
-        
-        # Start async text detection (handles multi-page)
-        response = self.client.start_document_text_detection(
-            DocumentLocation={
-                'S3Object': {
-                    'Bucket': self.bucket_name,
-                    'Name': file_name
-                }
-            }
+        session = boto3.session.Session(region_name=region_name)
+        self.client = session.client("textract")
+        self.s3 = session.client("s3")
+
+    def extract_all(self, pdf_path: str, bucket: str | None = None, s3_key: str | None = None) -> List[Dict[str, Any]]:
+        if not bucket:
+            raise ValueError("AWS Textract needs an S3 bucket for multi-page PDF processing.")
+        key = s3_key or Path(pdf_path).name
+        self.s3.upload_file(pdf_path, bucket, key)
+        start = self.client.start_document_text_detection(
+            DocumentLocation={"S3Object": {"Bucket": bucket, "Name": key}}
         )
-        
-        job_id = response['JobId']
-        
-        # Poll for completion
+        job_id = start["JobId"]
         while True:
-            result = self.client.get_document_text_detection(JobId=job_id)
-            
-            if result['JobStatus'] == 'SUCCEEDED':
+            r = self.client.get_document_text_detection(JobId=job_id)
+            if r["JobStatus"] == "SUCCEEDED":
+                result = r
                 break
-            elif result['JobStatus'] == 'FAILED':
-                raise Exception("Textract job failed")
-            
-            time.sleep(5)
-        
-        # Extract text with NextToken for ALL pages
-        all_text = []
-        blocks = result.get('Blocks', [])
-        
-        # Handle pagination with NextToken
-        while 'NextToken' in result:
-            result = self.client.get_document_text_detection(
-                JobId=job_id,
-                NextToken=result['NextToken']
-            )
-            blocks.extend(result.get('Blocks', []))
-        
-        # Group by page
-        page_texts = {}
-        for block in blocks:
-            if block['BlockType'] == 'LINE':
-                page_num = block.get('Page', 1)
-                if page_num not in page_texts:
-                    page_texts[page_num] = []
-                page_texts[page_num].append(block['Text'])
-        
-        all_bills = []
-        for page_num, text_lines in sorted(page_texts.items()):
-            all_bills.append({
-                "page": page_num,
-                "text": "\n".join(text_lines),
-                "provider": "AWS Textract"
-            })
-        
-        print(f"✓ {len(all_bills)} pages extracted via AWS Textract")
-        return all_bills
-
-# ==================== PROVIDER 4: Gemini (FIXED) ====================
-class GeminiOCR:
-    def __init__(self):
-        import google.generativeai as genai
-        genai.configure(api_key=Config.GEMINI_API_KEY)
-        self.model = genai.GenerativeModel("gemini-3.5-flash")
-    
-    def extract_all_bills(self, pdf_path: str) -> List[Dict]:
-        """Extract ALL bills from multi-page PDF - FIXED"""
-        import google.generativeai as genai
-        
-        # METHOD 1: Use Files API (recommended for multi-page)
-        sample_doc = genai.upload_file(
-            path=pdf_path,
-            mime_type='application/pdf'
-        )
-        
-        # Wait for processing
-        while sample_doc.state.name == "PROCESSING":
-            import time
+            if r["JobStatus"] == "FAILED":
+                raise RuntimeError("Textract job failed")
             time.sleep(2)
-            sample_doc = genai.get_file(sample_doc.name)
-        
-        # Prompt explicitly asks for ALL pages
-        prompt = """Extract ALL bills from this multi-page PDF.
-        - This PDF contains multiple separate bills on different pages
-        - Extract each bill's data separately
-        - Return data for each page separately
-        - Don't skip any pages
-        - Format as JSON array with page number and extracted data"""
-        
-        response = self.model.generate_content(
-            [sample_doc, prompt]
-        )
-        
-        # METHOD 2: Alternative - Split PDF manually
-        pages = PDFProcessor.split_pdf_to_pages(pdf_path)
-        all_bills = []
-        
-        for i, page_doc in enumerate(pages):
-            page_bytes = page_doc.write()
-            
-            response = self.model.generate_content([
-                genai.types.Part.from_bytes(
-                    data=page_bytes, 
-                    mime_type='application/pdf'
-                ),
-                "Extract bill data from page " + str(i+1)
-            ])
-            
-            all_bills.append({
-                "page": i + 1,
-                "text": response.text,
-                "provider": "Gemini"
-            })
-        
-        print(f"✓ {len(all_bills)} pages extracted via Gemini")
-        return all_bills
+        blocks = list(result.get("Blocks", []))
+        while result.get("NextToken"):
+            result = self.client.get_document_text_detection(JobId=job_id, NextToken=result["NextToken"])
+            blocks.extend(result.get("Blocks", []))
+        pages: Dict[int, List[str]] = {}
+        for b in blocks:
+            if b.get("BlockType") == "LINE":
+                pages.setdefault(int(b.get("Page", 1)), []).append(b.get("Text", ""))
+        return [{"page": p, "provider": "AWS Textract", "text": "\n".join(lines)} for p, lines in sorted(pages.items())]
 
-# ==================== PROVIDER 5: OpenAI ====================
+class GeminiOCR:
+    def __init__(self, api_key: str):
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        self.genai = genai
+        self.model = genai.GenerativeModel("gemini-2.5-flash")
+
+    def extract_all(self, pdf_path: str) -> List[Dict[str, Any]]:
+        file_obj = self.genai.upload_file(path=pdf_path, mime_type="application/pdf")
+        while getattr(file_obj, "state", None) and getattr(file_obj.state, "name", None) == "PROCESSING":
+            time.sleep(2)
+            file_obj = self.genai.get_file(file_obj.name)
+        prompt = "Extract ALL bills from this multi-page PDF. Return a JSON array. Do not skip any page."
+        resp = self.model.generate_content([file_obj, prompt])
+        return [{"page": 1, "provider": "Gemini", "text": getattr(resp, "text", "") or ""}]
+
 class OpenAIOCR:
-    def __init__(self):
+    def __init__(self, api_key: str):
         from openai import OpenAI
-        self.client = OpenAI(api_key=Config.OPENAI_API_KEY)
-    
-    def extract_all_bills(self, pdf_path: str) -> List[Dict]:
-        """Extract all pages using OpenAI GPT-4o"""
-        images = PDFProcessor.pdf_to_images(pdf_path)
-        all_bills = []
-        
-        for i, image in enumerate(images):
-            # Convert to base64
+        self.client = OpenAI(api_key=api_key)
+
+    def extract_all(self, pdf_path: str) -> List[Dict[str, Any]]:
+        results = []
+        for idx, img in enumerate(PDFProcessor.pdf_to_images(pdf_path), start=1):
             import io
-            buffered = io.BytesIO()
-            image.save(buffered, format="JPEG")
-            img_base64 = base64.b64encode(buffered.getvalue()).decode()
-            
-            response = self.client.chat.completions.create(
-                model="gpt-4o",
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=95)
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            resp = self.client.chat.completions.create(
+                model="gpt-4o-mini",
                 messages=[
                     {
                         "role": "user",
                         "content": [
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{img_base64}"
-                                }
-                            },
-                            {
-                                "type": "text",
-                                "text": f"Extract bill data from page {i+1}. Return structured JSON."
-                            }
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                            {"type": "text", "text": f"Extract bill data from page {idx}. Return JSON."}
                         ]
                     }
                 ],
-                max_tokens=1000
             )
-            
-            all_bills.append({
-                "page": i + 1,
-                "text": response.choices[0].message.content,
-                "provider": "OpenAI GPT-4o"
-            })
-        
-        print(f"✓ {len(all_bills)} pages extracted via OpenAI")
-        return all_bills
+            results.append({"page": idx, "provider": "OpenAI", "text": resp.choices[0].message.content})
+        return results
 
-# ==================== PROVIDER 6: Perplexity ====================
 class PerplexityOCR:
-    def __init__(self):
+    def __init__(self, api_key: str):
         from openai import OpenAI
-        self.client = OpenAI(
-            api_key=Config.PERPLEXITY_API_KEY,
-            base_url="https://api.perplexity.ai"
-        )
-    
-    def extract_all_bills(self, pdf_path: str) -> List[Dict]:
-        """Extract all pages using Perplexity Sonar"""
-        images = PDFProcessor.pdf_to_images(pdf_path)
-        all_bills = []
-        
-        for i, image in enumerate(images):
+        self.client = OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
+
+    def extract_all(self, pdf_path: str) -> List[Dict[str, Any]]:
+        results = []
+        for idx, img in enumerate(PDFProcessor.pdf_to_images(pdf_path), start=1):
             import io
-            buffered = io.BytesIO()
-            image.save(buffered, format="JPEG")
-            img_base64 = base64.b64encode(buffered.getvalue()).decode()
-            
-            response = self.client.chat.completions.create(
+            buf = io.BytesIO()
+            img.save(buf, format="JPEG", quality=95)
+            b64 = base64.b64encode(buf.getvalue()).decode()
+            resp = self.client.chat.completions.create(
                 model="sonar-pro",
                 messages=[
                     {
                         "role": "user",
-                        "content": f"""Extract bill data from page {i+1}.
-                        Base64 image: {img_base64[:100]}...
-                        Return structured JSON with bill details."""
+                        "content": [
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                            {"type": "text", "text": f"Extract bill data from page {idx}. Return JSON."}
+                        ]
                     }
                 ],
-                max_tokens=1000
             )
-            
-            all_bills.append({
-                "page": i + 1,
-                "text": response.choices[0].message.content,
-                "provider": "Perplexity"
-            })
-        
-        print(f"✓ {len(all_bills)} pages extracted via Perplexity")
-        return all_bills
-
-# ==================== MAIN PROCESSOR ====================
-class MultiBillOCRProcessor:
-    def __init__(self):
-        self.providers = {
-            "Google Vision": GoogleVisionOCR(),
-            "Google Document AI": GoogleDocumentAI(),
-            "AWS Textract": AWSTextract(),
-            "Gemini": GeminiOCR(),
-            "OpenAI": OpenAIOCR()
-            # Perplexity uses similar pattern as OpenAI
-        }
-    
-    def process(self, pdf_path: str, provider: str = "Gemini") -> List[Dict]:
-        """Process PDF with selected provider"""
-        if provider not in self.providers:
-            raise ValueError(f"Unknown provider: {provider}. Choose from {list(self.providers.keys())}")
-        
-        print(f"\n📄 Processing: {pdf_path}")
-        print(f"🔧 Provider: {provider}")
-        print(f"📊 Total pages: {PDFProcessor.get_page_count(pdf_path)}\n")
-        
-        results = self.providers[provider].extract_all_bills(pdf_path)
-        
-        # Save results
-        os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
-        output_file = f"{Config.OUTPUT_DIR}/{Path(pdf_path).stem}_{provider.replace(' ', '_')}.json"
-        
-        with open(output_file, 'w', encoding='utf-8') as f:
-            json.dump(results, f, indent=2, ensure_ascii=False)
-        
-        print(f"\n✅ Saved to: {output_file}")
-        print(f"📦 Total bills extracted: {len(results)}")
-        
+            results.append({"page": idx, "provider": "Perplexity", "text": resp.choices[0].message.content})
         return results
-    
-    def compare_all_providers(self, pdf_path: str) -> Dict[str, List[Dict]]:
-        """Process with ALL providers and compare"""
-        all_results = {}
-        
-        for provider in self.providers.keys():
-            print(f"\n{'='*60}")
-            print(f"Testing: {provider}")
-            print(f"{'='*60}")
-            all_results[provider] = self.process(pdf_path, provider)
-        
-        return all_results
 
-# ==================== USAGE ====================
+class MultiBillOCRProcessor:
+    def __init__(self, config: Dict[str, Any]):
+        self.config = config
+        self.providers = {}
+        if config.get("google_vision_credentials"):
+            self.providers["Google Vision"] = GoogleVisionOCR(config["google_vision_credentials"])
+        if config.get("gcp_project_id") and config.get("gcp_location") and config.get("gcp_processor_id"):
+            self.providers["Google Document AI"] = GoogleDocumentAI(
+                config["gcp_project_id"], config["gcp_location"], config["gcp_processor_id"]
+            )
+        if config.get("aws_region"):
+            self.providers["AWS Textract"] = AWSTextract(config["aws_region"])
+        if config.get("gemini_api_key"):
+            self.providers["Gemini"] = GeminiOCR(config["gemini_api_key"])
+        if config.get("openai_api_key"):
+            self.providers["OpenAI"] = OpenAIOCR(config["openai_api_key"])
+        if config.get("perplexity_api_key"):
+            self.providers["Perplexity"] = PerplexityOCR(config["perplexity_api_key"])
+
+    def process(self, pdf_path: str, provider: str) -> List[Dict[str, Any]]:
+        if provider not in self.providers:
+            raise ValueError(f"Provider not configured: {provider}")
+        results = self.providers[provider].extract_all(pdf_path)
+        PDFProcessor.save_results(pdf_path, provider, results)
+        return results
+
+    def process_all(self, pdf_path: str) -> Dict[str, List[Dict[str, Any]]]:
+        out = {}
+        for p in self.providers:
+            out[p] = self.process(pdf_path, p)
+        return out
+
 if __name__ == "__main__":
-    processor = MultiBillOCRProcessor()
-    
-    # Process single PDF with Gemini (FIXED for multi-page)
     pdf_file = "bill.pdf"
-    
-    if os.path.exists(pdf_file):
-        # Option 1: Single provider
-        results = processor.process(pdf_file, provider="Gemini")
-        
-        # Option 2: Compare all providers (uncomment to run)
-        # all_results = processor.compare_all_providers(pdf_file)
-        
-        print("\n" + "="*60)
-        print("SUMMARY")
-        print("="*60)
-        print(f"Original PDF has {PDFProcessor.get_page_count(pdf_file)} pages")
-        print(f"Extracted {len(results)} bills successfully ✓")
-        
-        # Show first bill preview
-        if results:
-            print("\n📋 First bill preview:")
-            print(f"Page: {results[0]['page']}")
-            print(f"Provider: {results[0]['provider']}")
-    else:
-        print(f"❌ File not found: {pdf_file}")
-        print("Please place bill.pdf in the same directory")
-
-# ==================== INSTALLATION ====================
-"""
-Required packages - install with:
-pip install PyMuPDF pdf2image pillow google-cloud-vision google-cloud-documentai boto3 google-generativeai openai python-dotenv
-
-System dependencies:
-sudo apt-get install poppler-utils  # For pdf2image
-"""
+    config = {
+        "google_vision_credentials": os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+        "gcp_project_id": os.getenv("GCP_PROJECT_ID"),
+        "gcp_location": os.getenv("GCP_LOCATION", "us"),
+        "gcp_processor_id": os.getenv("GCP_PROCESSOR_ID"),
+        "aws_region": os.getenv("AWS_REGION"),
+        "gemini_api_key": os.getenv("GEMINI_API_KEY"),
+        "openai_api_key": os.getenv("OPENAI_API_KEY"),
+        "perplexity_api_key": os.getenv("PERPLEXITY_API_KEY"),
+    }
+    processor = MultiBillOCRProcessor(config)
+    print(json.dumps({
+        "page_count": PDFProcessor.page_count(pdf_file),
+        "providers": list(processor.providers.keys())
+    }, indent=2))
