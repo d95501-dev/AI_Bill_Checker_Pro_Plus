@@ -1,31 +1,29 @@
-#!/usr/bin/env python3
 import os
 import json
 import base64
 import time
+import tempfile
 from pathlib import Path
 from typing import List, Dict, Any
 
+import streamlit as st
 import fitz
 from PIL import Image
 
 OUTPUT_DIR = Path("output")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
+def save_uploaded_pdf(uploaded_file):
+    temp_dir = tempfile.mkdtemp()
+    file_path = os.path.join(temp_dir, uploaded_file.name)
+    with open(file_path, "wb") as f:
+        f.write(uploaded_file.getvalue())
+    return file_path
+
 class PDFProcessor:
     @staticmethod
     def page_count(pdf_path: str) -> int:
         return len(fitz.open(pdf_path))
-
-    @staticmethod
-    def split_to_single_page_pdfs(pdf_path: str) -> List[bytes]:
-        src = fitz.open(pdf_path)
-        pages = []
-        for i in range(len(src)):
-            dst = fitz.open()
-            dst.insert_pdf(src, from_page=i, to_page=i)
-            pages.append(dst.tobytes())
-        return pages
 
     @staticmethod
     def pdf_to_images(pdf_path: str, dpi: int = 220) -> List[Image.Image]:
@@ -213,26 +211,39 @@ class MultiBillOCRProcessor:
         PDFProcessor.save_results(pdf_path, provider, results)
         return results
 
-    def process_all(self, pdf_path: str) -> Dict[str, List[Dict[str, Any]]]:
-        out = {}
-        for p in self.providers:
-            out[p] = self.process(pdf_path, p)
-        return out
+def main():
+    st.title("AI Multi-Bill OCR Processor")
+    uploaded_pdf = st.file_uploader("Upload Bill PDF", type=["pdf"])
+    provider = st.selectbox(
+        "Select OCR Provider",
+        ["Gemini", "Google Vision", "Google Document AI", "AWS Textract", "OpenAI", "Perplexity"]
+    )
+    if uploaded_pdf:
+        pdf_path = save_uploaded_pdf(uploaded_pdf)
+        st.info(f"Uploaded: {uploaded_pdf.name}")
+        st.write(f"Pages: {PDFProcessor.page_count(pdf_path)}")
+
+        config = {
+            "google_vision_credentials": os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+            "gcp_project_id": os.getenv("GCP_PROJECT_ID"),
+            "gcp_location": os.getenv("GCP_LOCATION", "us"),
+            "gcp_processor_id": os.getenv("GCP_PROCESSOR_ID"),
+            "aws_region": os.getenv("AWS_REGION"),
+            "gemini_api_key": os.getenv("GEMINI_API_KEY"),
+            "openai_api_key": os.getenv("OPENAI_API_KEY"),
+            "perplexity_api_key": os.getenv("PERPLEXITY_API_KEY"),
+        }
+
+        processor = MultiBillOCRProcessor(config)
+
+        if st.button("Process PDF"):
+            if provider not in processor.providers:
+                st.error(f"{provider} is not configured.")
+            else:
+                with st.spinner("Processing..."):
+                    results = processor.process(pdf_path, provider)
+                st.success(f"Done. Extracted {len(results)} page result(s).")
+                st.json(results)
 
 if __name__ == "__main__":
-    pdf_file = "bill.pdf"
-    config = {
-        "google_vision_credentials": os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
-        "gcp_project_id": os.getenv("GCP_PROJECT_ID"),
-        "gcp_location": os.getenv("GCP_LOCATION", "us"),
-        "gcp_processor_id": os.getenv("GCP_PROCESSOR_ID"),
-        "aws_region": os.getenv("AWS_REGION"),
-        "gemini_api_key": os.getenv("GEMINI_API_KEY"),
-        "openai_api_key": os.getenv("OPENAI_API_KEY"),
-        "perplexity_api_key": os.getenv("PERPLEXITY_API_KEY"),
-    }
-    processor = MultiBillOCRProcessor(config)
-    print(json.dumps({
-        "page_count": PDFProcessor.page_count(pdf_file),
-        "providers": list(processor.providers.keys())
-    }, indent=2))
+    main()
