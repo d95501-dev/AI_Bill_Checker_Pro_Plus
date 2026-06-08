@@ -113,7 +113,6 @@ def init_runtime_state():
         "gemini_available": True,
         "last_gemini_error_time": None,
         "gemini_cooldown_seconds": 900,
-        "gemini_retry_count": 0,
         "perplexity_enabled": True,
         "docai_enabled": True,
         "vision_enabled": True,
@@ -268,10 +267,7 @@ def get_drive_service():
     service_account_file = secret_or_default("GOOGLE_SERVICE_ACCOUNT_FILE", "service_account.json")
     if service_account is None or build is None or not os.path.exists(service_account_file):
         return None
-    creds = service_account.Credentials.from_service_account_file(
-        service_account_file,
-        scopes=["https://www.googleapis.com/auth/drive"],
-    )
+    creds = service_account.Credentials.from_service_account_file(service_account_file, scopes=["https://www.googleapis.com/auth/drive"])
     return build("drive", "v3", credentials=creds)
 
 
@@ -381,6 +377,30 @@ def convert_pdf_to_images(file_bytes):
     raise RuntimeError("No PDF rendering library available.")
 
 
+def extract_vision_text(vision_client, image):
+    img = vision.Image(content=image_to_bytes(image))
+    resp = vision_client.document_text_detection(image=img)
+    text = ""
+    if getattr(resp, "full_text_annotation", None):
+        text = getattr(resp.full_text_annotation, "text", "") or ""
+    if not text.strip() and getattr(resp, "text_annotations", None):
+        anns = resp.text_annotations
+        if anns and getattr(anns[0], "description", ""):
+            text = anns[0].description.strip()
+    return text.strip()
+
+
+def heuristic_extract_items(text):
+    items = []
+    for ln in [x.strip() for x in (text or "").splitlines() if x.strip()]:
+        if re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
+            continue
+        m = re.match(r"(.+?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$", ln)
+        if m:
+            items.append({"name": m.group(1).strip(), "qty": m.group(2), "rate": m.group(3), "amount": m.group(4)})
+    return items[:30]
+
+
 def heuristic_parse_from_text(text):
     text = (text or "").strip()
     if not text:
@@ -388,12 +408,14 @@ def heuristic_parse_from_text(text):
 
     lines = [x.strip() for x in text.splitlines() if x.strip()]
     shop_name = None
-    for ln in lines[:8]:
+    for ln in lines[:10]:
         if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
             shop_name = ln[:80]
             break
 
-    gst_number, bill_date, total = None, None, None
+    gst_number = None
+    bill_date = None
+    total = None
 
     m = re.search(r"\bGSTIN[:\s]*([0-9A-Z]{15})\b", text, re.I)
     if m:
@@ -416,29 +438,19 @@ def heuristic_parse_from_text(text):
             total = m.group(1)
             break
 
-    return {"shop_name": shop_name, "bill_date": bill_date, "gst_number": gst_number, "items": [], "total": total, "raw_text": text}
-
-
-def extract_vision_text(vision_client, image):
-    img = vision.Image(content=image_to_bytes(image))
-    resp = vision_client.document_text_detection(image=img)
-    text = ""
-    if getattr(resp, "full_text_annotation", None) and getattr(resp.full_text_annotation, "text", ""):
-        text = resp.full_text_annotation.text.strip()
-    if not text and getattr(resp, "text_annotations", None):
-        anns = resp.text_annotations
-        if anns and getattr(anns[0], "description", ""):
-            text = anns[0].description.strip()
-    return text
+    items = heuristic_extract_items(text)
+    return {"shop_name": shop_name, "bill_date": bill_date, "gst_number": gst_number, "items": items, "total": total, "raw_text": text}
 
 
 def try_gemini(model, image):
     try:
-        resp = model.generate_content([build_schema_prompt(), image])
+        resp = model.generate_content(
+            [build_schema_prompt(), image],
+            generation_config={"temperature": 0, "response_mime_type": "application/json"},
+        )
         data = parse_json_from_response(getattr(resp, "text", ""))
         st.session_state.gemini_available = True
         st.session_state.last_gemini_error_time = None
-        st.session_state.gemini_retry_count = 0
         return data, None
     except Exception as e:
         if is_gemini_quota_error(e):
@@ -447,26 +459,31 @@ def try_gemini(model, image):
         return None, e
 
 
-def analyze_with_auto_fallback(model_bundle, image):
-    providers = ["Gemini", "Google Vision OCR", "Google Document AI", "AWS Textract", "OpenAI", "Perplexity"]
-    for provider in providers:
+def analyze_with_auto_fallback(model_bundle, image, forced=None):
+    order = ["Gemini", "Google Vision OCR", "Google Document AI", "AWS Textract", "OpenAI", "Perplexity"]
+    if forced in order:
+        order = [forced] + [x for x in order if x != forced]
+
+    for provider in order:
         try:
             if provider == "Gemini" and model_bundle.get("gemini") and can_try_gemini():
                 data, _ = try_gemini(model_bundle["gemini"], image)
                 if data:
                     return data
-                continue
+
             elif provider == "Google Vision OCR" and model_bundle.get("vision_client") and st.session_state.get("vision_enabled", True):
                 text = extract_vision_text(model_bundle["vision_client"], image)
-                if text.strip():
+                if text:
                     return heuristic_parse_from_text(text)
+
             elif provider == "Google Document AI" and model_bundle.get("docai_client") and model_bundle.get("docai_name") and st.session_state.get("docai_enabled", True):
                 raw_document = documentai.RawDocument(content=image_to_bytes(image), mime_type="image/jpeg")
                 request = documentai.ProcessRequest(name=model_bundle["docai_name"], raw_document=raw_document)
                 result = model_bundle["docai_client"].process_document(request=request)
                 text = getattr(result.document, "text", "") or ""
-                if text.strip():
+                if text:
                     return heuristic_parse_from_text(text)
+
             elif provider == "AWS Textract" and model_bundle.get("textract_client") and st.session_state.get("textract_enabled", True):
                 resp = model_bundle["textract_client"].analyze_expense(Document={"Bytes": image_to_bytes(image)})
                 text_parts = []
@@ -474,8 +491,9 @@ def analyze_with_auto_fallback(model_bundle, image):
                     for sf in d.get("SummaryFields", []):
                         text_parts.append(f"{sf.get('Type', {}).get('Text', '')}: {sf.get('ValueDetection', {}).get('Text', '')}")
                 text = "\n".join(text_parts)
-                if text.strip():
+                if text:
                     return heuristic_parse_from_text(text)
+
             elif provider == "OpenAI" and model_bundle.get("openai"):
                 b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
                 resp = model_bundle["openai"].chat.completions.create(
@@ -487,6 +505,7 @@ def analyze_with_auto_fallback(model_bundle, image):
                     response_format={"type": "json_object"},
                 )
                 return parse_json_from_response(resp.choices[0].message.content)
+
             elif provider == "Perplexity" and model_bundle.get("perplexity") and st.session_state.get("perplexity_enabled", True):
                 b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
                 resp = model_bundle["perplexity"].chat.completions.create(
@@ -500,6 +519,7 @@ def analyze_with_auto_fallback(model_bundle, image):
                 return parse_json_from_response(resp.choices[0].message.content)
         except Exception:
             continue
+
     return heuristic_parse_from_text("")
 
 
@@ -517,20 +537,17 @@ def insert_bill(shop, date, gst, total, calc_total, status):
 
 
 def render_bill_result(data, source_name, save_to_db=False, upload_drive=True):
-    if not isinstance(data, dict):
-        st.error("AI se data nahi mil paaya.")
-        return
-
-    raw_text = str(data.get("raw_text") or "").strip()
-    items = normalize_items(data.get("items"))
+    raw_text = str(data.get("raw_text") or "").strip() if isinstance(data, dict) else ""
+    items = normalize_items(data.get("items") if isinstance(data, dict) else [])
     df = pd.DataFrame(items) if items else pd.DataFrame(columns=["name", "qty", "rate", "amount"])
 
-    shop_name = str(data.get("shop_name") or "").strip()
-    bill_date = str(data.get("bill_date") or "").strip()
-    gst_number = data.get("gst_number") or "N/A"
+    shop_name = str(data.get("shop_name") or "").strip() if isinstance(data, dict) else ""
+    bill_date = str(data.get("bill_date") or "").strip() if isinstance(data, dict) else ""
+    gst_number = data.get("gst_number") if isinstance(data, dict) else None
+    gst_number = gst_number or "N/A"
 
     if not shop_name and raw_text:
-        for ln in [x.strip() for x in raw_text.splitlines() if x.strip()][:8]:
+        for ln in [x.strip() for x in raw_text.splitlines() if x.strip()][:10]:
             if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
                 shop_name = ln[:80]
                 break
@@ -544,20 +561,16 @@ def render_bill_result(data, source_name, save_to_db=False, upload_drive=True):
         df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
         calculated_total = float(df["amount"].sum())
     else:
-        st.info("No items detected.")
         calculated_total = 0.0
+        st.info("No items detected.")
 
-    bill_total = safe_float(data.get("total", 0))
+    bill_total = safe_float(data.get("total", 0) if isinstance(data, dict) else 0)
     has_meaningful_data = bool(raw_text) or not df.empty or bill_total > 0 or shop_name != "Unknown Shop"
-
-    if not has_meaningful_data:
-        status = "Needs Review"
-    elif bill_total > 0 and abs(calculated_total - bill_total) < 1:
+    status = "Needs Review"
+    if has_meaningful_data and bill_total > 0 and abs(calculated_total - bill_total) < 1:
         status = "Matched"
-    elif bill_total > 0:
+    elif has_meaningful_data and bill_total > 0:
         status = "Mismatch"
-    else:
-        status = "Needs Review"
 
     st.markdown(f"### 🏪 Vendor: `{shop_name}`")
     c1, c2 = st.columns(2)
@@ -573,6 +586,10 @@ def render_bill_result(data, source_name, save_to_db=False, upload_drive=True):
     diff = abs(calculated_total - bill_total)
     st.success("🎯 Auto-Arithmetic Audit Pass." if diff < 1 else f"🛑 Audit Discrepancy Found: ₹{diff:,.2f}")
     st.info(f"Status: {status}")
+
+    if raw_text:
+        with st.expander("View extracted raw text"):
+            st.text(raw_text[:20000])
 
     if save_to_db:
         insert_bill(shop_name, bill_date, gst_number, bill_total, calculated_total, status)
@@ -614,7 +631,7 @@ def build_batch_summary(results):
             shop = str(d.get("shop_name") or "").strip()
             bill_date = str(d.get("bill_date") or "").strip()
             if not shop and raw_text:
-                for ln in [x.strip() for x in raw_text.splitlines() if x.strip()][:8]:
+                for ln in [x.strip() for x in raw_text.splitlines() if x.strip()][:10]:
                     if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
                         shop = ln[:80]
                         break
@@ -641,8 +658,6 @@ def make_excel_download(df, filename, label="📥 Download Excel", key="excel_do
 
 
 def render_theme_toggle(location="main"):
-    if "theme_mode" not in st.session_state:
-        st.session_state["theme_mode"] = "light"
     mode = st.radio(
         "Theme",
         ["light", "dark"],
@@ -706,7 +721,7 @@ def render_upload_module():
                     results = []
                     for idx, page_img in enumerate(pages, start=1):
                         try:
-                            data = analyze_with_auto_fallback(model_bundle, page_img)
+                            data = analyze_with_auto_fallback(model_bundle, page_img, forced=st.session_state.get("selected_provider"))
                             results.append({"page": idx, "source": uploaded_file.name, "data": data, "error": None})
                         except Exception as e:
                             results.append({"page": idx, "source": uploaded_file.name, "data": None, "error": str(e)})
@@ -717,7 +732,7 @@ def render_upload_module():
                 image = Image.open(BytesIO(file_bytes)).convert("RGB")
                 st.image(image, caption="Uploaded Bill", use_container_width=True)
                 if st.button("Process Image", use_container_width=True):
-                    data = analyze_with_auto_fallback(model_bundle, image)
+                    data = analyze_with_auto_fallback(model_bundle, image, forced=st.session_state.get("selected_provider"))
                     render_bill_result(data, uploaded_file.name, save_to_db=True, upload_drive=True)
 
     with tabs[1]:
@@ -744,17 +759,14 @@ def main():
         do_login()
 
     with st.sidebar:
-        st.markdown(
-            """
+        st.markdown("""
             <div style="padding:12px;border:1px solid rgba(255,255,255,0.14);border-radius:14px;">
                 <div style="font-size:22px;font-weight:800;">Deep CSC</div>
                 <div style="font-size:16px;font-weight:700;margin-top:4px;">AI Bill Processor</div>
                 <div style="font-size:13px;opacity:0.95;margin-top:8px;">ID: 256423250015</div>
                 <div style="font-size:12px;opacity:0.9;margin-top:10px;">Provider-ready OCR and invoice processing dashboard.</div>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        """, unsafe_allow_html=True)
         render_theme_toggle("sidebar")
         if st.button("Logout", use_container_width=True):
             terminate_session()
