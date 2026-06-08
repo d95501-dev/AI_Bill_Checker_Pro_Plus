@@ -142,7 +142,8 @@ def terminate_session():
 
 
 def apply_theme_css():
-    if st.session_state.theme_mode == "dark":
+    theme_mode = st.session_state.get("theme_mode", "light")
+    if theme_mode == "dark":
         st.markdown(
             """
             <style>
@@ -654,9 +655,11 @@ def make_excel_download(df, filename, label="📥 Download Excel", key="excel_do
 
 
 def render_theme_toggle():
-    mode = st.radio("Theme", ["light", "dark"], horizontal=True, index=0 if st.session_state.theme_mode == "light" else 1)
-    if mode != st.session_state.theme_mode:
-        st.session_state.theme_mode = mode
+    if "theme_mode" not in st.session_state:
+        st.session_state["theme_mode"] = "light"
+    mode = st.radio("Theme", ["light", "dark"], horizontal=True, index=0 if st.session_state.get("theme_mode", "light") == "light" else 1, key="theme_radio")
+    if mode != st.session_state.get("theme_mode", "light"):
+        st.session_state["theme_mode"] = mode
         st.rerun()
 
 
