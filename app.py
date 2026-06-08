@@ -1,899 +1,439 @@
-import base64
-import json
-import re
-import sqlite3
-import tempfile
-import os
-import sys
-from datetime import datetime
-from io import BytesIO
-from pathlib import Path
-
-import pandas as pd
-import streamlit as st
-from PIL import Image, ImageFilter, ImageOps, ImageEnhance
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
-
-try:
-    from pdf2image import convert_from_bytes
-except Exception:
-    convert_from_bytes = None
-
-try:
-    import google.generativeai as genai
-except Exception:
-    genai = None
-
-try:
-    from openai import OpenAI
-except Exception:
-    OpenAI = None
-
-try:
-    import requests
-except Exception:
-    requests = None
-
-try:
-    from google.cloud import vision
-except Exception:
-    vision = None
-
-try:
-    from google.cloud import documentai
-except Exception:
-    documentai = None
-
-try:
-    import boto3
-except Exception:
-    boto3 = None
-
-import warnings
-warnings.filterwarnings("ignore")
-
-APP_TITLE = "Deep CSC - AI Bill Processor Premium"
-DB_PATH = "bills.db"
-MAX_PDF_PAGES = 1
-PDF_DPI = 200
-PROCESSING_TIMEOUT_SECONDS = 30
-VISION_TIMEOUT_SECONDS = 20
-VISION_RETRY_COUNT = 2
-
-
-def secret_or_default(key, default=""):
-    try:
-        return st.secrets[key]
-    except Exception:
-        return default
-
-
-DEFAULT_USERNAME = secret_or_default("APP_USERNAME", "admin")
-DEFAULT_PASSWORD = secret_or_default("APP_PASSWORD", "password123")
-
-
-def setup_page():
-    st.set_page_config(page_title=APP_TITLE, page_icon="🧾", layout="wide", initial_sidebar_state="expanded")
-
-
-def init_db():
-    with sqlite3.connect(DB_PATH, timeout=30) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS bills (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                shop_name TEXT NOT NULL,
-                bill_date TEXT NOT NULL,
-                gst_number TEXT,
-                total REAL NOT NULL,
-                calculated_total REAL NOT NULL,
-                status TEXT NOT NULL,
-                timestamp TEXT NOT NULL,
-                UNIQUE(shop_name, bill_date, total)
-            )
-            """
-        )
-
-
-def init_auth():
-    if "logged_in" not in st.session_state:
-        st.session_state.logged_in = False
-
-
-def init_runtime_state():
-    defaults = {
-        "selected_provider": "Google Vision OCR",
-        "gemini_available": True,
-        "last_gemini_error_time": None,
-        "gemini_cooldown_seconds": 120,
-        "gemini_retry_count": 0,
-        "perplexity_enabled": True,
-        "docai_enabled": True,
-        "vision_enabled": True,
-        "textract_enabled": True,
-        "theme_mode": "light",
-        "history_search": "",
-        "history_shop": "",
-        "history_gst": "",
-        "history_status": "All",
-        "history_min_amount": "",
-        "history_max_amount": "",
-        "history_date_from": None,
-        "history_date_to": None,
-    }
-    for k, v in defaults.items():
-        if k not in st.session_state:
-            st.session_state[k] = v
-
-
-def do_login():
-    st.title("🔐 System Login Proxy")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-    if st.button("Login Server", use_container_width=True, key="login_btn"):
-        if username == DEFAULT_USERNAME and password == DEFAULT_PASSWORD:
-            st.session_state.logged_in = True
-            st.rerun()
-        else:
-            st.error("Invalid Username or Password Credentials")
-    st.stop()
-
-
-def terminate_session():
-    st.session_state.logged_in = False
-    for k in list(st.session_state.keys()):
-        if k != "logged_in":
-            del st.session_state[k]
-    st.rerun()
-
-
-def apply_theme_css():
-    if st.session_state.theme_mode == "dark":
-        st.markdown(
-            """
-            <style>
-            .stApp { background: #0b1220; color: #e5e7eb; }
-            section[data-testid="stSidebar"] { background: #0f172a; color: #e5e7eb; }
-            .stMarkdown, .stText, .stMetricValue, .stMetricLabel, .stInfo, .stWarning, .stError { color: #e5e7eb !important; }
-            .stButton>button { background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important; color: white !important; }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            """
-            <style>
-            .stApp { background: #f8fafc; color: #0f172a; }
-            section[data-testid="stSidebar"] { background: #0f172a; color: #f8fafc; }
-            .stMarkdown, .stText, .stMetricValue, .stMetricLabel { color: #0f172a !important; }
-            </style>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
-def apply_css():
-    st.markdown(
-        """
-        <style>
-        .main { background-color: #f8fafc; }
-        h1, h2, h3, h4 { font-family: system-ui, sans-serif !important; color: #0f172a !important; font-weight: 800 !important; }
-        .deep-csc-header {
-            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #311042 100%);
-            padding: 30px; border-radius: 24px; margin-bottom: 20px;
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px;
-            color: #e5e7eb !important;
-        }
-        .branding-text h1 {
-            background: linear-gradient(to right, #38bdf8, #c084fc, #f43f5e);
-            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-            margin: 0; font-size: 34px !important; letter-spacing: -0.5px;
-        }
-        .csc-meta-badge {
-            background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.15);
-            padding: 10px 18px; border-radius: 14px; color: #e2e8f0 !important; font-size: 13px !important; line-height: 1.6;
-        }
-        .branding-badge {
-            background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%); color: white !important;
-            padding: 8px 18px; border-radius: 50px; font-size: 13px !important; font-weight: 700;
-            text-transform: uppercase; letter-spacing: 1px; box-shadow: 0 4px 14px rgba(236, 72, 153, 0.4);
-        }
-        .stButton>button {
-            background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important;
-            color: white !important;
-            font-weight: 700 !important;
-            padding: 12px 24px !important;
-            border-radius: 12px !important;
-            border: none !important;
-        }
-        [data-testid="stSidebar"] * { color: #f8fafc !important; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-
-@st.cache_resource
-def setup_gemini():
-    if genai is None:
-        return None
-    api_key = secret_or_default("GEMINI_API_KEY", "").strip()
-    if not api_key or "your_" in api_key.lower():
-        return None
-    genai.configure(api_key=api_key)
-    return genai.GenerativeModel("gemini-2.5-flash")
-
-
-@st.cache_resource
-def setup_openai():
-    api_key = secret_or_default("OPENAI_API_KEY", "").strip()
-    if not api_key or OpenAI is None or "your_" in api_key.lower():
-        return None
-    return OpenAI(api_key=api_key)
-
-
-@st.cache_resource
-def setup_google_vision():
-    if vision is None:
-        return None
-    return vision.ImageAnnotatorClient()
-
-
-@st.cache_resource
-def setup_textract():
-    if boto3 is None:
-        return None
-    if not secret_or_default("AWS_ACCESS_KEY_ID", "") or not secret_or_default("AWS_SECRET_ACCESS_KEY", ""):
-        return None
-    return boto3.client(
-        "textract",
-        region_name=secret_or_default("AWS_REGION", "ap-south-1"),
-        aws_access_key_id=secret_or_default("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=secret_or_default("AWS_SECRET_ACCESS_KEY"),
-    )
-
-
-def validate_gst(gst_str):
-    if not gst_str:
-        return False, "N/A"
-    gst_regex = r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$"
-    clean_gst = re.sub(r"[^A-Z0-9]", "", str(gst_str).upper())
-    return bool(re.match(gst_regex, clean_gst)), clean_gst
-
-
-def normalize_items(items):
-    cleaned = []
-    if not isinstance(items, list):
-        return cleaned
-    for it in items:
-        if isinstance(it, dict):
-            cleaned.append(
-                {
-                    "name": it.get("name") or "",
-                    "qty": it.get("qty") or "",
-                    "rate": it.get("rate") or "",
-                    "amount": it.get("amount") or "",
-                }
-            )
-    return cleaned
-
-
-def parse_json_from_response(response_text):
-    if not response_text:
-        raise ValueError("Empty response from model")
-    raw = response_text.strip().replace("```json", "").replace("```", "").strip()
-    match = re.search(r"\{.*\}", raw, re.DOTALL)
-    if match:
-        raw = match.group(0)
-    return json.loads(raw)
-
-
-def safe_float(value):
-    try:
-        return float(str(value).replace(",", "").strip())
-    except Exception:
-        return 0.0
-
-
-def can_try_gemini():
-    if st.session_state.get("gemini_available", True):
-        return True
-    last_error = st.session_state.get("last_gemini_error_time")
-    if not last_error:
-        return True
-    cooldown = st.session_state.get("gemini_cooldown_seconds", 120)
-    return (datetime.now() - last_error).total_seconds() >= cooldown
-
-
-def build_schema_prompt():
-    return """
-You are a document extraction specialist.
-Return ONLY valid JSON:
-{
-  "shop_name": null or string,
-  "bill_date": null or string,
-  "gst_number": null or string,
-  "items": [{"name": string, "qty": string, "rate": string, "amount": string}],
-  "total": null or string
-}
-Rules:
-- Use visible text only.
-- If missing, return null.
-- No markdown.
-- No explanation.
+#!/usr/bin/env python3
+"""
+AI Multi-Bill OCR Processor - All Providers Support
+Deep CSC AI | ID: 256423250015 | Owner: Deepak
+Fixes multi-page PDF extraction for all OCR providers
 """
 
+import os
+import json
+import base64
+from pathlib import Path
+from typing import List, Dict, Any
+import fitz  # PyMuPDF
+from pdf2image import convert_from_path
 
-def image_to_bytes(image):
-    buf = BytesIO()
-    image.save(buf, format="JPEG", quality=95)
-    return buf.getvalue()
+# ==================== CONFIGURATION ====================
+class Config:
+    GCP_CREDENTIALS_PATH = "google_credentials.json"
+    GCP_PROJECT_ID = "your-project-id"
+    AWS_PROFILE = "default"
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "your-gemini-key")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "your-openai-key")
+    PERPLEXITY_API_KEY = os.getenv("PERPLEXITY_API_KEY", "your-perplexity-key")
+    OUTPUT_DIR = "extracted_bills"
 
+# ==================== PDF UTILITIES ====================
+class PDFProcessor:
+    @staticmethod
+    def split_pdf_to_pages(pdf_path: str) -> List[fitz.Document]:
+        """Split PDF into individual pages"""
+        doc = fitz.open(pdf_path)
+        pages = []
+        for i in range(len(doc)):
+            new_doc = fitz.open()
+            new_doc.insert_pdf(doc, from_page=i, to_page=i)
+            pages.append(new_doc)
+        return pages
+    
+    @staticmethod
+    def pdf_to_images(pdf_path: str, dpi=200) -> List:
+        """Convert PDF pages to images"""
+        images = convert_from_path(pdf_path, dpi=dpi)
+        return images
+    
+    @staticmethod
+    def get_page_count(pdf_path: str) -> int:
+        """Get total pages in PDF"""
+        doc = fitz.open(pdf_path)
+        return len(doc)
 
-def preprocess_image_for_ocr(image):
-    img = image.convert("RGB")
-    img = ImageOps.exif_transpose(img)
-    img = ImageOps.grayscale(img)
-    img = ImageEnhance.Contrast(img).enhance(2.0)
-    img = ImageEnhance.Sharpness(img).enhance(1.5)
-    img = img.filter(ImageFilter.SHARPEN)
-    if img.width < 2200:
-        ratio = 2200 / img.width
-        img = img.resize((int(img.width * ratio), int(img.height * ratio)))
-    return img.convert("RGB")
-
-
-def heuristic_parse_from_text(text):
-    text = text or ""
-    lines = [x.strip() for x in text.splitlines() if x.strip()]
-    shop_name = lines[0][:80] if lines else None
-    gst_number = None
-    bill_date = None
-    total = None
-    m = re.search(r"\bGSTIN[:\s]*([0-9A-Z]{15})\b", text, re.I)
-    if m:
-        gst_number = m.group(1)
-    for p in [r"\b(\d{2}[/-]\d{2}[/-]\d{2,4})\b", r"\b(\d{4}[/-]\d{2}[/-]\d{2})\b"]:
-        m = re.search(p, text)
-        if m:
-            bill_date = m.group(1)
-            break
-    for p in [r"\bTotal[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b", r"\bGrand Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b"]:
-        m = re.search(p, text, re.I)
-        if m:
-            total = m.group(1)
-            break
-    return {"shop_name": shop_name, "bill_date": bill_date, "gst_number": gst_number, "items": [], "total": total}
-
-
-def analyze_gemini(model, image):
-    resp = model.generate_content([build_schema_prompt(), image])
-    return parse_json_from_response(getattr(resp, "text", ""))
-
-
-def analyze_openai(client, image):
-    b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
-    resp = client.chat.completions.create(
-        model=secret_or_default("OPENAI_MODEL", "gpt-4o-mini"),
-        messages=[
-            {"role": "system", "content": build_schema_prompt()},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Extract invoice JSON from this image."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                ],
-            },
-        ],
-        response_format={"type": "json_object"},
-        timeout=PROCESSING_TIMEOUT_SECONDS,
-    )
-    return parse_json_from_response(resp.choices[0].message.content)
-
-
-def analyze_perplexity(api_key, image):
-    if not api_key:
-        raise RuntimeError("Perplexity API key missing")
-    b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
-    payload = {
-        "model": secret_or_default("PERPLEXITY_MODEL", "sonar-pro"),
-        "messages": [
-            {"role": "system", "content": build_schema_prompt()},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Extract invoice JSON from this image."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-                ],
-            },
-        ],
-        "temperature": 0.0,
-    }
-    r = requests.post(
-        "https://api.perplexity.ai/chat/completions",
-        headers={"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"},
-        json=payload,
-        timeout=PROCESSING_TIMEOUT_SECONDS,
-    )
-    if r.status_code == 401:
-        raise RuntimeError("Perplexity API unauthorized: check API key")
-    r.raise_for_status()
-    return parse_json_from_response(r.json()["choices"][0]["message"]["content"])
-
-
-def extract_text_from_vision_response(resp):
-    parts = []
-    try:
-        fta = getattr(resp, "full_text_annotation", None)
-        if fta and getattr(fta, "text", ""):
-            parts.append(fta.text)
-    except Exception:
-        pass
-    try:
-        tta = getattr(resp, "text_annotations", None)
-        if tta and len(tta) > 0:
-            parts.append(tta[0].description or "")
-    except Exception:
-        pass
-    return "\n".join([p for p in parts if p and p.strip()]).strip()
-
-
-def safe_google_vision_detect(client, image_bytes, timeout_seconds=20, retries=2):
-    img = vision.Image(content=image_bytes)
-    last_err = None
-    for _ in range(retries + 1):
-        try:
-            return client.document_text_detection(image=img, timeout=timeout_seconds)
-        except Exception as e:
-            last_err = e
-            msg = str(e)
-            if ("503" not in msg) and ("ServiceUnavailable" not in type(e).__name__) and ("DeadlineExceeded" not in type(e).__name__):
-                raise
-    raise RuntimeError("Google Vision temporarily unavailable") from last_err
-
-
-def analyze_google_vision(client, image):
-    image = preprocess_image_for_ocr(image)
-    b = image_to_bytes(image)
-    resp = safe_google_vision_detect(client, b, timeout_seconds=VISION_TIMEOUT_SECONDS, retries=VISION_RETRY_COUNT)
-    extracted = extract_text_from_vision_response(resp)
-    parsed = heuristic_parse_from_text(extracted)
-    if not parsed.get("shop_name") and not parsed.get("bill_date") and not parsed.get("total"):
-        raise RuntimeError("OCR returned empty or unusable text")
-    return parsed
-
-
-def analyze_document_ai(image):
-    project_id = secret_or_default("GCP_PROJECT_ID", "").strip()
-    location = secret_or_default("DOC_AI_LOCATION", "us")
-    processor_id = secret_or_default("DOC_AI_PROCESSOR_ID", "").strip()
-    client = documentai.DocumentProcessorServiceClient()
-    name = client.processor_path(project_id, location, processor_id)
-    content = image_to_bytes(image)
-    raw_document = documentai.RawDocument(content=content, mime_type="image/jpeg")
-    request = documentai.ProcessRequest(name=name, raw_document=raw_document)
-    result = client.process_document(request=request)
-    return heuristic_parse_from_text(getattr(result.document, "text", "") or "")
-
-
-def analyze_textract(client, image):
-    img_bytes = image_to_bytes(image)
-    resp = client.analyze_expense(Document={"Bytes": img_bytes})
-    text_parts = []
-    for d in resp.get("ExpenseDocuments", []):
-        for sf in d.get("SummaryFields", []):
-            text_parts.append(f"{sf.get('Type', {}).get('Text', '')}: {sf.get('ValueDetection', {}).get('Text', '')}")
-    return heuristic_parse_from_text("\n".join(text_parts))
-
-
-def analyze_with_auto_fallback(model_bundle, image):
-    provider = st.session_state.get("selected_provider", "Google Vision OCR")
-    try:
-        if provider == "Google Vision OCR" and model_bundle.get("vision_client") and st.session_state.get("vision_enabled", True):
-            try:
-                return analyze_google_vision(model_bundle["vision_client"], image)
-            except Exception:
-                st.warning("Google Vision failed, switching to fallback provider.")
-                if model_bundle.get("gemini") and can_try_gemini():
-                    return analyze_gemini(model_bundle["gemini"], preprocess_image_for_ocr(image))
-                if model_bundle.get("openai"):
-                    return analyze_openai(model_bundle["openai"], preprocess_image_for_ocr(image))
-                if model_bundle.get("perplexity_key") and st.session_state.get("perplexity_enabled", False):
-                    try:
-                        return analyze_perplexity(model_bundle["perplexity_key"], preprocess_image_for_ocr(image))
-                    except Exception as e:
-                        st.warning(f"Perplexity skipped: {e}")
-                return heuristic_parse_from_text("")
-
-        if provider == "Google Document AI" and st.session_state.get("docai_enabled", False):
-            return analyze_document_ai(image)
-
-        if provider == "AWS Textract" and model_bundle.get("textract_client") and st.session_state.get("textract_enabled", False):
-            return analyze_textract(model_bundle["textract_client"], image)
-
-        if provider == "Gemini" and model_bundle.get("gemini") and can_try_gemini():
-            return analyze_gemini(model_bundle["gemini"], preprocess_image_for_ocr(image))
-
-        if provider == "OpenAI" and model_bundle.get("openai"):
-            return analyze_openai(model_bundle["openai"], preprocess_image_for_ocr(image))
-
-        if provider == "Perplexity Verify" and model_bundle.get("perplexity_key") and st.session_state.get("perplexity_enabled", False):
-            return analyze_perplexity(model_bundle["perplexity_key"], preprocess_image_for_ocr(image))
-
-        raise RuntimeError(f"Provider not available or disabled: {provider}")
-
-    except Exception as e:
-        st.warning(f"OCR fallback used: {e}")
-        return heuristic_parse_from_text("")
-
-
-def add_history_table(limit=50):
-    with sqlite3.connect(DB_PATH, timeout=30) as conn:
-        return pd.read_sql_query(
-            f"""
-            SELECT shop_name, bill_date, gst_number, total, calculated_total, status, timestamp
-            FROM bills
-            ORDER BY id DESC
-            LIMIT {int(limit)}
-            """,
-            conn,
-        )
-
-
-def filter_history(df):
-    if df.empty:
-        return df
-    out = df.copy()
-    if st.session_state.history_search:
-        q = st.session_state.history_search.lower()
-        mask = (
-            out["shop_name"].astype(str).str.lower().str.contains(q, na=False)
-            | out["gst_number"].astype(str).str.lower().str.contains(q, na=False)
-            | out["status"].astype(str).str.lower().str.contains(q, na=False)
-        )
-        out = out[mask]
-    if st.session_state.history_shop:
-        out = out[out["shop_name"].astype(str).str.lower().str.contains(st.session_state.history_shop.lower(), na=False)]
-    if st.session_state.history_gst:
-        out = out[out["gst_number"].astype(str).str.lower().str.contains(st.session_state.history_gst.lower(), na=False)]
-    if st.session_state.history_status != "All":
-        out = out[out["status"] == st.session_state.history_status]
-    if st.session_state.history_min_amount:
-        out = out[pd.to_numeric(out["total"], errors="coerce").fillna(0) >= safe_float(st.session_state.history_min_amount)]
-    if st.session_state.history_max_amount:
-        out = out[pd.to_numeric(out["total"], errors="coerce").fillna(0) <= safe_float(st.session_state.history_max_amount)]
-    if st.session_state.history_date_from:
-        out = out[out["bill_date"].astype(str) >= str(st.session_state.history_date_from)]
-    if st.session_state.history_date_to:
-        out = out[out["bill_date"].astype(str) <= str(st.session_state.history_date_to)]
-    return out
-
-
-def render_print_preview(shop_name, bill_date, gst_number, bill_total, items_df):
-    with st.expander("🖨️ Print Preview", expanded=False):
-        st.write(f"**Shop:** {shop_name}")
-        st.write(f"**Date:** {bill_date}")
-        st.write(f"**GSTIN:** {gst_number}")
-        st.write(f"**Total:** ₹{bill_total:,.2f}")
-        if not items_df.empty:
-            st.dataframe(items_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("No items to preview.")
-
-
-def insert_bill(shop, date, gst, total, calc_total, status):
-    with sqlite3.connect(DB_PATH, timeout=30) as conn:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT OR IGNORE INTO bills
-            (shop_name, bill_date, gst_number, total, calculated_total, status, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (shop, date, gst, total, calc_total, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
-        )
-        conn.commit()
-        return cur.rowcount > 0
-
-
-def export_payload(df, base_name, widget_key):
-    try:
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False, sheet_name="Data")
-        st.download_button(
-            "📥 Export Excel Data Sheets",
-            data=buffer.getvalue(),
-            file_name=f"{base_name}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            key=f"excel_{widget_key}",
-        )
-    except Exception:
-        csv_data = df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "📥 Download CSV Instead",
-            data=csv_data,
-            file_name=f"{base_name}.csv",
-            mime="text/csv",
-            use_container_width=True,
-            key=f"csv_{widget_key}",
-        )
-
-
-def export_pdf(shop_name, bill_date, gst_number, bill_total, widget_key):
-    pdf_temp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-    doc = SimpleDocTemplate(pdf_temp.name)
-    styles = getSampleStyleSheet()
-    elements = [
-        Paragraph(f"Invoice Summary: {shop_name}", styles["Title"]),
-        Spacer(1, 10),
-        Paragraph(f"Date: {bill_date} | GSTIN: {gst_number}", styles["Normal"]),
-        Paragraph(f"Verified Final Amount: INR {bill_total:.2f}", styles["Heading3"]),
-    ]
-    doc.build(elements)
-    with open(pdf_temp.name, "rb") as f:
-        st.download_button(
-            "📄 Download Sign-off PDF",
-            f.read(),
-            file_name=f"{re.sub(r'[^A-Za-z0-9_-]+', '_', shop_name)}_receipt.pdf",
-            mime="application/pdf",
-            use_container_width=True,
-            key=f"pdf_{widget_key}",
-        )
-
-
-def render_bill_result(data, source_name, save_to_db=False):
-    if not isinstance(data, dict):
-        st.error("AI se data nahi mil paaya.")
-        return
-
-    shop_name = str(data.get("shop_name") or "Unknown Shop").strip()
-    bill_date = str(data.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
-    gst_number = data.get("gst_number") or "N/A"
-    safe_shop = re.sub(r"[^A-Za-z0-9_-]+", "_", shop_name)
-    safe_source = re.sub(r"[^A-Za-z0-9_-]+", "_", str(source_name))
-
-    st.markdown(f"### 🏪 Vendor: `{shop_name}`")
-    c1, c2 = st.columns(2)
-    c1.markdown(f"**🗓️ Declared Invoice Date:** {bill_date}")
-
-    is_valid_gst, formatted_gst = validate_gst(gst_number)
-    if gst_number != "N/A" and is_valid_gst:
-        c2.markdown(f"**🛡️ GSTIN Registry Validation:** :green[✅ Valid - {formatted_gst}]")
-    elif gst_number != "N/A":
-        c2.markdown(f"**🛡️ GSTIN Registry Validation:** :orange[⚠️ Format Mismatch - {formatted_gst}]")
-    else:
-        c2.markdown("**🛡️ GSTIN Registry Validation:** :red[ℹ️ Not Disclosed]")
-
-    items = normalize_items(data.get("items"))
-    if items:
-        df = pd.DataFrame(items)
-        st.dataframe(df, use_container_width=True, hide_index=True)
-        df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
-        calculated_total = float(df["amount"].sum())
-    else:
-        df = pd.DataFrame(columns=["name", "qty", "rate", "amount"])
-        calculated_total = 0.0
-        st.info("No items detected.")
-
-    bill_total = safe_float(data.get("total", 0))
-    diff = abs(calculated_total - bill_total)
-    status_txt = "Matched" if diff < 1 else "Mismatch"
-
-    c3, c4 = st.columns(2)
-    c3.metric("Summation of Extracted Items", f"₹{calculated_total:,.2f}")
-    c4.metric("Declared Invoice Total", f"₹{bill_total:,.2f}")
-
-    if status_txt == "Matched":
-        st.success("🎯 Auto-Arithmetic Audit Pass.")
-    else:
-        st.error(f"🛑 Audit Discrepancy Found: ₹{diff:,.2f}")
-
-    render_print_preview(shop_name, bill_date, gst_number, bill_total, df)
-
-    if save_to_db and insert_bill(shop_name, bill_date, gst_number, bill_total, calculated_total, status_txt):
-        st.toast("Saved to DB", icon="💾")
-
-    export_payload(df, safe_shop + "_ledger", safe_source)
-    export_pdf(shop_name, bill_date, gst_number, bill_total, safe_source)
-
-
-def build_batch_summary(results):
-    rows = []
-    for item in results:
-        if item.get("data"):
-            d = item["data"]
-            items = normalize_items(d.get("items"))
-            tmp_df = pd.DataFrame(items)
-            calc_total = float(pd.to_numeric(tmp_df["amount"], errors="coerce").fillna(0).sum()) if not tmp_df.empty else 0.0
-            total = safe_float(d.get("total", 0))
-            rows.append(
-                {
-                    "page": item.get("page"),
-                    "source": item.get("source"),
-                    "shop_name": str(d.get("shop_name") or "Unknown Shop").strip(),
-                    "bill_date": str(d.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip(),
-                    "gst_number": d.get("gst_number") or "N/A",
-                    "bill_total": total,
-                    "calculated_total": calc_total,
-                    "difference": abs(calc_total - total),
-                    "status": "Matched" if abs(calc_total - total) < 1 else "Mismatch",
-                }
+# ==================== PROVIDER 1: Google Vision OCR ====================
+class GoogleVisionOCR:
+    def __init__(self):
+        from google.cloud import vision
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = Config.GCP_CREDENTIALS_PATH
+        self.client = vision.ImageAnnotatorClient()
+    
+    def extract_all_bills(self, pdf_path: str) -> List[Dict]:
+        """Extract text from ALL pages of PDF"""
+        from google.cloud import vision
+        import io
+        
+        images = PDFProcessor.pdf_to_images(pdf_path)
+        all_bills = []
+        
+        for i, image in enumerate(images):
+            # Convert PIL image to byte data
+            img_byte_arr = io.BytesIO()
+            image.save(img_byte_arr, format='PNG')
+            img_bytes = img_byte_arr.getvalue()
+            
+            response = self.client.document_text_detection(
+                image=vision.Image(content=img_bytes)
             )
-        else:
-            rows.append(
+            
+            bill_data = {
+                "page": i + 1,
+                "text": response.full_text_annotation.text,
+                "provider": "Google Vision OCR"
+            }
+            all_bills.append(bill_data)
+            print(f"✓ Page {i+1} extracted via Google Vision")
+        
+        return all_bills
+
+# ==================== PROVIDER 2: Google Document AI ====================
+class GoogleDocumentAI:
+    def __init__(self):
+        from google.cloud import documentai
+        self.client = documentai.DocumentProcessorServiceClient()
+        self.processor_name = (
+            f"projects/{Config.GCP_PROJECT_ID}/locations/us/processors/YOUR_PROCESSOR_ID"
+        )
+    
+    def extract_all_bills(self, pdf_path: str) -> List[Dict]:
+        """Process multi-page PDF with Document AI"""
+        from google.cloud import documentai
+        
+        # Read PDF
+        with open(pdf_path, "rb") as image:
+            content = image.read()
+        
+        document = documentai.Document(
+            gutted_bytes=content,
+            mime_type="application/pdf"
+        )
+        
+        request = documentai.ProcessRequest(
+            name=self.processor_name,
+            raw_document=document
+        )
+        
+        result = self.client.process_document(request=request)
+        document = result.document
+        
+        # All pages are processed together - extract entities
+        bill_data = {
+            "page": 1,  # Document AI processes entire PDF
+            "text": document.text,
+            "entities": [
                 {
-                    "page": item.get("page"),
-                    "source": item.get("source"),
-                    "shop_name": None,
-                    "bill_date": None,
-                    "gst_number": None,
-                    "bill_total": None,
-                    "calculated_total": None,
-                    "difference": None,
-                    "status": f"Error: {item.get('error')}",
+                    "type": entity.type,
+                    "text": document.text[entity.start_offset:entity.end_offset]
                 }
-            )
-    return pd.DataFrame(rows)
-
-
-def make_excel_download(df, filename, label="📥 Download Excel", key="excel_download"):
-    try:
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False, sheet_name="Batch Summary")
-        st.download_button(label, data=buffer.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key=key)
-    except Exception:
-        csv_data = df.to_csv(index=False).encode("utf-8")
-        st.download_button("📥 Download CSV Instead", data=csv_data, file_name=filename.replace(".xlsx", ".csv"), mime="text/csv", use_container_width=True, key=key + "_csv")
-
-
-def render_theme_toggle():
-    mode = st.radio("Theme", ["light", "dark"], horizontal=True, index=0 if st.session_state.theme_mode == "light" else 1)
-    if mode != st.session_state.theme_mode:
-        st.session_state.theme_mode = mode
-        st.rerun()
-
-
-def render_upload_module():
-    st.markdown(
-        """
-        <div class="deep-csc-header">
-            <div class="branding-text">
-                <h1>🧾 AI Multi-Bill OCR Processor</h1>
-                <p style="color: #94a3b8; margin: 5px 0 0 0;">Automated structural data parsing pipeline powered by multiple providers.</p>
-            </div>
-            <div class="csc-meta-badge">📍 <b>Deep Digital Seva Kendra</b><br>👤 Owner: Deepak | ID: 256423250015</div>
-            <div class="branding-badge">Deep CSC AI</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    tabs = st.tabs(["📷 Scan / Upload", "🖨️ Preview", "🕘 History", "⚙️ Settings"])
-
-    with tabs[0]:
-        providers = ["Google Vision OCR", "Google Document AI", "AWS Textract", "Gemini", "OpenAI", "Perplexity Verify"]
-        st.session_state.selected_provider = st.selectbox("Select OCR Provider", providers, index=0)
-
-        uploaded_file = st.file_uploader("Upload Bill Image or PDF", type=["jpg", "jpeg", "png", "pdf"])
-
-        vision_client = setup_google_vision()
-        gemini_model = setup_gemini()
-        openai_client = setup_openai()
-        textract_client = setup_textract()
-        perplexity_key = secret_or_default("PERPLEXITY_API_KEY", "").strip()
-
-        model_bundle = {
-            "vision_client": vision_client,
-            "gemini": gemini_model,
-            "openai": openai_client,
-            "textract_client": textract_client,
-            "perplexity_key": perplexity_key,
+                for entity in document.entities
+            ],
+            "provider": "Google Document AI",
+            "total_pages": PDFProcessor.get_page_count(pdf_path)
         }
+        
+        print(f"✓ PDF processed ({bill_data['total_pages']} pages) via Document AI")
+        return [bill_data]
 
-        if uploaded_file:
-            file_bytes = uploaded_file.read()
-            file_name = uploaded_file.name.lower()
-
-            if file_name.endswith(".pdf"):
-                if st.button("Process PDF", use_container_width=True):
-                    if convert_from_bytes is None:
-                        st.error("pdf2image not installed.")
-                    else:
-                        pages = convert_from_bytes(file_bytes, dpi=PDF_DPI)[:MAX_PDF_PAGES]
-                        results = []
-                        for idx, page_img in enumerate(pages, start=1):
-                            try:
-                                data = analyze_with_auto_fallback(model_bundle, page_img)
-                                results.append({"page": idx, "source": uploaded_file.name, "data": data, "error": None})
-                            except Exception as e:
-                                results.append({"page": idx, "source": uploaded_file.name, "data": None, "error": str(e)})
-                        df = build_batch_summary(results)
-                        st.dataframe(df, use_container_width=True, hide_index=True)
-                        make_excel_download(df, "batch_summary.xlsx")
-            else:
-                image = Image.open(BytesIO(file_bytes)).convert("RGB")
-                st.image(image, caption="Uploaded Bill", use_container_width=True)
-                if st.button("Process Image", use_container_width=True):
-                    with st.spinner("Processing bill..."):
-                        try:
-                            data = analyze_with_auto_fallback(model_bundle, image)
-                            render_bill_result(data, uploaded_file.name, save_to_db=True)
-                        except Exception as e:
-                            st.error(f"Processing failed: {e}")
-
-    with tabs[1]:
-        st.subheader("Print Preview")
-        st.info("Preview shows after processing an image or PDF in the Scan / Upload tab.", icon="ℹ️")
-
-    with tabs[2]:
-        st.subheader("Search & Filter History")
-        c1, c2, c3 = st.columns(3)
-        st.session_state.history_search = c1.text_input("Search all", value=st.session_state.history_search)
-        st.session_state.history_shop = c2.text_input("Shop name", value=st.session_state.history_shop)
-        st.session_state.history_gst = c3.text_input("GSTIN", value=st.session_state.history_gst)
-
-        c4, c5, c6 = st.columns(3)
-        st.session_state.history_status = c4.selectbox("Status", ["All", "Matched", "Mismatch"], index=["All", "Matched", "Mismatch"].index(st.session_state.history_status))
-        st.session_state.history_min_amount = c5.text_input("Min amount", value=st.session_state.history_min_amount)
-        st.session_state.history_max_amount = c6.text_input("Max amount", value=st.session_state.history_max_amount)
-
-        c7, c8 = st.columns(2)
-        st.session_state.history_date_from = c7.date_input("Date from", value=st.session_state.history_date_from)
-        st.session_state.history_date_to = c8.date_input("Date to", value=st.session_state.history_date_to)
-
-        history_df = add_history_table()
-        filtered = filter_history(history_df)
-
-        st.markdown("### Recent History")
-        if not filtered.empty:
-            st.dataframe(filtered, use_container_width=True, hide_index=True)
-            csv_bytes = filtered.to_csv(index=False).encode("utf-8")
-            st.download_button("Download Filtered CSV", data=csv_bytes, file_name="filtered_history.csv", mime="text/csv", use_container_width=True)
-        else:
-            st.info("No matching records found.")
-
-    with tabs[3]:
-        st.subheader("Settings")
-        render_theme_toggle()
-        with st.expander("Advanced options", expanded=False):
-            st.write("Use this section later for more controls like OCR provider defaults, print shortcuts, or theme tuning.")
-
-
-def main():
-    setup_page()
-    init_db()
-    init_auth()
-    init_runtime_state()
-    apply_theme_css()
-    apply_css()
-
-    if not st.session_state.logged_in:
-        do_login()
-
-    with st.sidebar:
-        st.markdown(
-            """
-            <div class="sidebar-brand-box">
-                <div class="sidebar-title">Deep CSC</div>
-                <div class="sidebar-subtitle">AI Bill Processor</div>
-                <div class="sidebar-id-badge">ID: 256423250015</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
+# ==================== PROVIDER 3: AWS Textract ====================
+class AWSTextract:
+    def __init__(self):
+        import boto3
+        self.client = boto3.client('textract', profile_name=Config.AWS_PROFILE)
+        self.s3_client = boto3.client('s3', profile_name=Config.AWS_PROFILE)
+        self.bucket_name = "your-bucket-name"
+    
+    def extract_all_bills(self, pdf_path: str) -> List[Dict]:
+        """Extract ALL pages using asynchronous Textract"""
+        import boto3
+        import time
+        
+        # Upload PDF to S3
+        file_name = os.path.basename(pdf_path)
+        self.s3_client.upload_file(pdf_path, self.bucket_name, file_name)
+        
+        # Start async text detection (handles multi-page)
+        response = self.client.start_document_text_detection(
+            DocumentLocation={
+                'S3Object': {
+                    'Bucket': self.bucket_name,
+                    'Name': file_name
+                }
+            }
         )
-        render_theme_toggle()
-        st.write("Provider-ready OCR and invoice extraction dashboard.")
-        if st.button("Logout", use_container_width=True):
-            terminate_session()
+        
+        job_id = response['JobId']
+        
+        # Poll for completion
+        while True:
+            result = self.client.get_document_text_detection(JobId=job_id)
+            
+            if result['JobStatus'] == 'SUCCEEDED':
+                break
+            elif result['JobStatus'] == 'FAILED':
+                raise Exception("Textract job failed")
+            
+            time.sleep(5)
+        
+        # Extract text with NextToken for ALL pages
+        all_text = []
+        blocks = result.get('Blocks', [])
+        
+        # Handle pagination with NextToken
+        while 'NextToken' in result:
+            result = self.client.get_document_text_detection(
+                JobId=job_id,
+                NextToken=result['NextToken']
+            )
+            blocks.extend(result.get('Blocks', []))
+        
+        # Group by page
+        page_texts = {}
+        for block in blocks:
+            if block['BlockType'] == 'LINE':
+                page_num = block.get('Page', 1)
+                if page_num not in page_texts:
+                    page_texts[page_num] = []
+                page_texts[page_num].append(block['Text'])
+        
+        all_bills = []
+        for page_num, text_lines in sorted(page_texts.items()):
+            all_bills.append({
+                "page": page_num,
+                "text": "\n".join(text_lines),
+                "provider": "AWS Textract"
+            })
+        
+        print(f"✓ {len(all_bills)} pages extracted via AWS Textract")
+        return all_bills
 
-    render_upload_module()
+# ==================== PROVIDER 4: Gemini (FIXED) ====================
+class GeminiOCR:
+    def __init__(self):
+        import google.generativeai as genai
+        genai.configure(api_key=Config.GEMINI_API_KEY)
+        self.model = genai.GenerativeModel("gemini-3.5-flash")
+    
+    def extract_all_bills(self, pdf_path: str) -> List[Dict]:
+        """Extract ALL bills from multi-page PDF - FIXED"""
+        import google.generativeai as genai
+        
+        # METHOD 1: Use Files API (recommended for multi-page)
+        sample_doc = genai.upload_file(
+            path=pdf_path,
+            mime_type='application/pdf'
+        )
+        
+        # Wait for processing
+        while sample_doc.state.name == "PROCESSING":
+            import time
+            time.sleep(2)
+            sample_doc = genai.get_file(sample_doc.name)
+        
+        # Prompt explicitly asks for ALL pages
+        prompt = """Extract ALL bills from this multi-page PDF.
+        - This PDF contains multiple separate bills on different pages
+        - Extract each bill's data separately
+        - Return data for each page separately
+        - Don't skip any pages
+        - Format as JSON array with page number and extracted data"""
+        
+        response = self.model.generate_content(
+            [sample_doc, prompt]
+        )
+        
+        # METHOD 2: Alternative - Split PDF manually
+        pages = PDFProcessor.split_pdf_to_pages(pdf_path)
+        all_bills = []
+        
+        for i, page_doc in enumerate(pages):
+            page_bytes = page_doc.write()
+            
+            response = self.model.generate_content([
+                genai.types.Part.from_bytes(
+                    data=page_bytes, 
+                    mime_type='application/pdf'
+                ),
+                "Extract bill data from page " + str(i+1)
+            ])
+            
+            all_bills.append({
+                "page": i + 1,
+                "text": response.text,
+                "provider": "Gemini"
+            })
+        
+        print(f"✓ {len(all_bills)} pages extracted via Gemini")
+        return all_bills
 
+# ==================== PROVIDER 5: OpenAI ====================
+class OpenAIOCR:
+    def __init__(self):
+        from openai import OpenAI
+        self.client = OpenAI(api_key=Config.OPENAI_API_KEY)
+    
+    def extract_all_bills(self, pdf_path: str) -> List[Dict]:
+        """Extract all pages using OpenAI GPT-4o"""
+        images = PDFProcessor.pdf_to_images(pdf_path)
+        all_bills = []
+        
+        for i, image in enumerate(images):
+            # Convert to base64
+            import io
+            buffered = io.BytesIO()
+            image.save(buffered, format="JPEG")
+            img_base64 = base64.b64encode(buffered.getvalue()).decode()
+            
+            response = self.client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{img_base64}"
+                                }
+                            },
+                            {
+                                "type": "text",
+                                "text": f"Extract bill data from page {i+1}. Return structured JSON."
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=1000
+            )
+            
+            all_bills.append({
+                "page": i + 1,
+                "text": response.choices[0].message.content,
+                "provider": "OpenAI GPT-4o"
+            })
+        
+        print(f"✓ {len(all_bills)} pages extracted via OpenAI")
+        return all_bills
 
+# ==================== PROVIDER 6: Perplexity ====================
+class PerplexityOCR:
+    def __init__(self):
+        from openai import OpenAI
+        self.client = OpenAI(
+            api_key=Config.PERPLEXITY_API_KEY,
+            base_url="https://api.perplexity.ai"
+        )
+    
+    def extract_all_bills(self, pdf_path: str) -> List[Dict]:
+        """Extract all pages using Perplexity Sonar"""
+        images = PDFProcessor.pdf_to_images(pdf_path)
+        all_bills = []
+        
+        for i, image in enumerate(images):
+            import io
+            buffered = io.BytesIO()
+            image.save(buffered, format="JPEG")
+            img_base64 = base64.b64encode(buffered.getvalue()).decode()
+            
+            response = self.client.chat.completions.create(
+                model="sonar-pro",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": f"""Extract bill data from page {i+1}.
+                        Base64 image: {img_base64[:100]}...
+                        Return structured JSON with bill details."""
+                    }
+                ],
+                max_tokens=1000
+            )
+            
+            all_bills.append({
+                "page": i + 1,
+                "text": response.choices[0].message.content,
+                "provider": "Perplexity"
+            })
+        
+        print(f"✓ {len(all_bills)} pages extracted via Perplexity")
+        return all_bills
+
+# ==================== MAIN PROCESSOR ====================
+class MultiBillOCRProcessor:
+    def __init__(self):
+        self.providers = {
+            "Google Vision": GoogleVisionOCR(),
+            "Google Document AI": GoogleDocumentAI(),
+            "AWS Textract": AWSTextract(),
+            "Gemini": GeminiOCR(),
+            "OpenAI": OpenAIOCR()
+            # Perplexity uses similar pattern as OpenAI
+        }
+    
+    def process(self, pdf_path: str, provider: str = "Gemini") -> List[Dict]:
+        """Process PDF with selected provider"""
+        if provider not in self.providers:
+            raise ValueError(f"Unknown provider: {provider}. Choose from {list(self.providers.keys())}")
+        
+        print(f"\n📄 Processing: {pdf_path}")
+        print(f"🔧 Provider: {provider}")
+        print(f"📊 Total pages: {PDFProcessor.get_page_count(pdf_path)}\n")
+        
+        results = self.providers[provider].extract_all_bills(pdf_path)
+        
+        # Save results
+        os.makedirs(Config.OUTPUT_DIR, exist_ok=True)
+        output_file = f"{Config.OUTPUT_DIR}/{Path(pdf_path).stem}_{provider.replace(' ', '_')}.json"
+        
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(results, f, indent=2, ensure_ascii=False)
+        
+        print(f"\n✅ Saved to: {output_file}")
+        print(f"📦 Total bills extracted: {len(results)}")
+        
+        return results
+    
+    def compare_all_providers(self, pdf_path: str) -> Dict[str, List[Dict]]:
+        """Process with ALL providers and compare"""
+        all_results = {}
+        
+        for provider in self.providers.keys():
+            print(f"\n{'='*60}")
+            print(f"Testing: {provider}")
+            print(f"{'='*60}")
+            all_results[provider] = self.process(pdf_path, provider)
+        
+        return all_results
+
+# ==================== USAGE ====================
 if __name__ == "__main__":
-    main()
+    processor = MultiBillOCRProcessor()
+    
+    # Process single PDF with Gemini (FIXED for multi-page)
+    pdf_file = "bill.pdf"
+    
+    if os.path.exists(pdf_file):
+        # Option 1: Single provider
+        results = processor.process(pdf_file, provider="Gemini")
+        
+        # Option 2: Compare all providers (uncomment to run)
+        # all_results = processor.compare_all_providers(pdf_file)
+        
+        print("\n" + "="*60)
+        print("SUMMARY")
+        print("="*60)
+        print(f"Original PDF has {PDFProcessor.get_page_count(pdf_file)} pages")
+        print(f"Extracted {len(results)} bills successfully ✓")
+        
+        # Show first bill preview
+        if results:
+            print("\n📋 First bill preview:")
+            print(f"Page: {results[0]['page']}")
+            print(f"Provider: {results[0]['provider']}")
+    else:
+        print(f"❌ File not found: {pdf_file}")
+        print("Please place bill.pdf in the same directory")
+
+# ==================== INSTALLATION ====================
+"""
+Required packages - install with:
+pip install PyMuPDF pdf2image pillow google-cloud-vision google-cloud-documentai boto3 google-generativeai openai python-dotenv
+
+System dependencies:
+sudo apt-get install poppler-utils  # For pdf2image
+"""
