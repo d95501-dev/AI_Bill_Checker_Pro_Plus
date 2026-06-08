@@ -751,7 +751,7 @@ def render_upload_module():
 
     with tabs[2]:
         st.subheader("Settings")
-        render_theme_toggle()
+        st.caption("Theme control is available in the sidebar.")
         st.caption("Provider order is sequential and fail-fast for speed.")
 
 
