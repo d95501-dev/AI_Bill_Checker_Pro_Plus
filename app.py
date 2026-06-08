@@ -1,10 +1,3 @@
-#!/usr/bin/env python3
-"""
-AI Multi-Bill OCR Processor - All Providers Support
-Deep CSC AI | ID: 256423250015 | Owner: Deepak
-Fixes multi-page PDF extraction for all OCR providers
-"""
-
 import os
 import json
 import base64
