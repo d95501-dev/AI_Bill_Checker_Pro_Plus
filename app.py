@@ -50,13 +50,6 @@ try:
 except Exception:
     boto3 = None
 
-try:
-    import win32print
-    WINDOWS_PRINTER_AVAILABLE = True
-except Exception:
-    win32print = None
-    WINDOWS_PRINTER_AVAILABLE = False
-
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -115,12 +108,10 @@ def init_runtime_state():
         "last_gemini_error_time": None,
         "gemini_cooldown_seconds": 120,
         "gemini_retry_count": 0,
-        "perplexity_enabled": False,
-        "docai_enabled": False,
+        "perplexity_enabled": True,
+        "docai_enabled": True,
         "vision_enabled": True,
-        "textract_enabled": False,
-        "selected_printer": None,
-        "printer_refresh_nonce": 0,
+        "textract_enabled": True,
         "theme_mode": "light",
         "history_search": "",
         "history_shop": "",
@@ -165,10 +156,6 @@ def apply_theme_css():
             .stApp { background: #0b1220; color: #e5e7eb; }
             section[data-testid="stSidebar"] { background: #0f172a; color: #e5e7eb; }
             .stMarkdown, .stText, .stMetricValue, .stMetricLabel, .stInfo, .stWarning, .stError { color: #e5e7eb !important; }
-            .sidebar-title, .sidebar-subtitle, .sidebar-id-badge, .sidebar-brand-box, label, .stRadio label, .stSelectbox label, .stTextInput label, .stFileUploader label { color: #e5e7eb !important; }
-            div[data-testid="stMetricValue"] { color: #f8fafc !important; }
-            div[data-testid="stMetricLabel"] { color: #cbd5e1 !important; }
-            .stRadio > div, .stSelectbox > div, .stTextInput > div { color: #e5e7eb !important; }
             .stButton>button { background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important; color: white !important; }
             </style>
             """,
@@ -180,7 +167,6 @@ def apply_theme_css():
             <style>
             .stApp { background: #f8fafc; color: #0f172a; }
             section[data-testid="stSidebar"] { background: #0f172a; color: #f8fafc; }
-            .sidebar-title, .sidebar-subtitle, .sidebar-id-badge, .sidebar-brand-box, label, .stRadio label, .stSelectbox label, .stTextInput label, .stFileUploader label { color: #f8fafc !important; }
             .stMarkdown, .stText, .stMetricValue, .stMetricLabel { color: #0f172a !important; }
             </style>
             """,
@@ -537,92 +523,6 @@ def analyze_with_auto_fallback(model_bundle, image):
         return heuristic_parse_from_text("")
 
 
-def check_printer_status():
-    if sys.platform != "win32":
-        return False, "Windows only feature", "windows"
-    if not WINDOWS_PRINTER_AVAILABLE:
-        return False, "Install pywin32: pip install pywin32", "install"
-    try:
-        default_printer = win32print.GetDefaultPrinter()
-        if default_printer:
-            return True, default_printer, "ready"
-        return False, "No printer installed in Windows", "none"
-    except Exception as e:
-        return False, str(e), "error"
-
-
-def get_windows_printers():
-    if sys.platform != "win32" or win32print is None:
-        return []
-    return [p[2] for p in win32print.EnumPrinters(2)]
-
-
-def get_default_printer():
-    if sys.platform != "win32" or win32print is None:
-        return None
-    try:
-        return win32print.GetDefaultPrinter()
-    except Exception:
-        return None
-
-
-def render_printer_status_card():
-    ok, msg, kind = check_printer_status()
-    if ok:
-        st.markdown(
-            f"""
-            <div style="padding:14px;border-radius:14px;background:#ecfdf5;border:1px solid #10b981;margin-bottom:12px;">
-                <b style="color:#047857;">🟢 Printer Ready</b><br>
-                <span style="color:#065f46;">{msg}</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-    else:
-        color = "#f59e0b" if kind == "install" else "#ef4444"
-        label = "🟡 Printer Setup Needed" if kind == "install" else "🔴 Printer Not Ready"
-        st.markdown(
-            f"""
-            <div style="padding:14px;border-radius:14px;background:#fff7ed;border:1px solid {color};margin-bottom:12px;">
-                <b style="color:{color};">{label}</b><br>
-                <span style="color:#7c2d12;">{msg}</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-
-def render_printer_selector():
-    if sys.platform != "win32" or win32print is None:
-        st.info("Windows only feature")
-        return None
-    if st.button("🔄 Refresh printer list", key="refresh_printers"):
-        st.session_state.printer_refresh_nonce += 1
-        st.rerun()
-    printers = get_windows_printers()
-    if not printers:
-        st.warning("No printers found.")
-        return None
-    default_printer = get_default_printer()
-    if "selected_printer" not in st.session_state or st.session_state.selected_printer not in printers:
-        st.session_state.selected_printer = default_printer if default_printer in printers else printers[0]
-    selected_printer = st.selectbox(
-        "Select Printer",
-        printers,
-        index=printers.index(st.session_state.selected_printer),
-        key=f"printer_selector_{st.session_state.printer_refresh_nonce}",
-    )
-    st.session_state.selected_printer = selected_printer
-    st.caption(f"Current default printer: {default_printer or 'Not set'}")
-    if st.button("Set as Default Printer", use_container_width=True, key="set_default_printer"):
-        try:
-            win32print.SetDefaultPrinter(selected_printer)
-            st.success(f"Default printer set to: {selected_printer}")
-        except Exception as e:
-            st.error(f"Failed to set default printer: {e}")
-    return selected_printer
-
-
 def add_history_table(limit=50):
     with sqlite3.connect(DB_PATH, timeout=30) as conn:
         return pd.read_sql_query(
@@ -677,56 +577,6 @@ def render_print_preview(shop_name, bill_date, gst_number, bill_total, items_df)
             st.info("No items to preview.")
 
 
-def print_excel_file(file_path):
-    try:
-        if sys.platform == "win32":
-            os.startfile(file_path, "print")
-            return True, "🖨️ Print job sent to default printer! ✓"
-        return False, "Windows only feature"
-    except Exception as e:
-        return False, f"Print failed: {str(e)}"
-
-
-def print_pdf_file(file_path):
-    try:
-        if sys.platform == "win32":
-            os.startfile(file_path, "print")
-            return True, "🖨️ Print job sent to default printer! ✓"
-        return False, "Windows only feature"
-    except Exception as e:
-        return False, f"Print failed: {str(e)}"
-
-
-def open_naps2_scanner():
-    if sys.platform != "win32":
-        return False, "Windows only feature"
-    naps2_paths = [
-        r"C:\Program Files\NAPS2\NAPS2.exe",
-        r"C:\Program Files (x86)\NAPS2\NAPS2.exe",
-        r"C:\Program Files\NAPS2\naps2.exe",
-        r"C:\Program Files (x86)\NAPS2\naps2.exe",
-    ]
-    for p in naps2_paths:
-        if Path(p).exists():
-            os.startfile(p)
-            return True, f"Scanner opened: {p}"
-    return False, "NAPS2 not installed. Please install it first."
-
-
-def show_printer_setup_notice():
-    if sys.platform == "win32":
-        st.info(
-            "ℹ️ Printer Setup: Windows only feature\n"
-            "1. Open Windows Settings → Bluetooth & devices → Printers & scanners\n"
-            "2. Add your printer\n"
-            "3. Set it as default printer\n"
-            "4. Restart the app",
-            icon="ℹ️",
-        )
-    else:
-        st.info("ℹ️ Printer Setup: Windows only feature", icon="ℹ️")
-
-
 def insert_bill(shop, date, gst, total, calc_total, status):
     with sqlite3.connect(DB_PATH, timeout=30) as conn:
         cur = conn.cursor()
@@ -743,34 +593,17 @@ def insert_bill(shop, date, gst, total, calc_total, status):
 
 
 def export_payload(df, base_name, widget_key):
-    try:
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False, sheet_name="Data")
-        temp_excel = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-        temp_excel.write(buffer.getvalue())
-        temp_excel.close()
-        st.download_button(
-            "📥 Export Excel Data Sheets",
-            data=buffer.getvalue(),
-            file_name=f"{base_name}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            key=f"excel_{widget_key}",
-        )
-        print_success, print_msg = print_excel_file(temp_excel.name)
-        if print_success:
-            st.success(print_msg, icon="🖨️")
-    except Exception:
-        csv_data = df.to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "📥 Download CSV Instead",
-            data=csv_data,
-            file_name=f"{base_name}.csv",
-            mime="text/csv",
-            use_container_width=True,
-            key=f"csv_{widget_key}",
-        )
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Data")
+    st.download_button(
+        "📥 Export Excel Data Sheets",
+        data=buffer.getvalue(),
+        file_name=f"{base_name}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+        key=f"excel_{widget_key}",
+    )
 
 
 def export_pdf(shop_name, bill_date, gst_number, bill_total, widget_key):
@@ -793,9 +626,6 @@ def export_pdf(shop_name, bill_date, gst_number, bill_total, widget_key):
             use_container_width=True,
             key=f"pdf_{widget_key}",
         )
-    print_success, print_msg = print_pdf_file(pdf_temp.name)
-    if print_success:
-        st.success(print_msg, icon="🖨️")
 
 
 def render_bill_result(data, source_name, save_to_db=False):
@@ -837,7 +667,6 @@ def render_bill_result(data, source_name, save_to_db=False):
         st.success("🎯 Auto-Arithmetic Audit Pass.")
     else:
         st.error(f"🛑 Audit Discrepancy Found: ₹{diff:,.2f}")
-    render_printer_status_card()
     render_print_preview(shop_name, bill_date, gst_number, bill_total, df)
     if save_to_db and insert_bill(shop_name, bill_date, gst_number, bill_total, calculated_total, status_txt):
         st.toast("Saved to DB", icon="💾")
@@ -885,20 +714,10 @@ def build_batch_summary(results):
 
 
 def make_excel_download(df, filename, label="📥 Download Excel", key="excel_download"):
-    try:
-        buffer = BytesIO()
-        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-            df.to_excel(writer, index=False, sheet_name="Batch Summary")
-        temp_excel = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-        temp_excel.write(buffer.getvalue())
-        temp_excel.close()
-        st.download_button(label, data=buffer.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key=key)
-        print_success, print_msg = print_excel_file(temp_excel.name)
-        if print_success:
-            st.success(f"🖨️ {print_msg}")
-    except Exception:
-        csv_data = df.to_csv(index=False).encode("utf-8")
-        st.download_button("📥 Download CSV Instead", data=csv_data, file_name=filename.replace(".xlsx", ".csv"), mime="text/csv", use_container_width=True, key=key + "_csv")
+    buffer = BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Batch Summary")
+    st.download_button(label, data=buffer.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key=key)
 
 
 def render_theme_toggle():
@@ -926,18 +745,6 @@ def render_upload_module():
     tabs = st.tabs(["📷 Scan / Upload", "🖨️ Preview", "🕘 History", "⚙️ Settings"])
 
     with tabs[0]:
-        show_printer_setup_notice()
-        render_printer_status_card()
-        render_printer_selector()
-
-        if st.button("📷 Open Scanner App", use_container_width=True, key="open_scanner", type="primary"):
-            scan_success, scan_msg = open_naps2_scanner()
-            if scan_success:
-                st.success(scan_msg)
-                st.info("After scanning, upload the saved image/PDF back into the app.", icon="ℹ️")
-            else:
-                st.error(scan_msg)
-
         providers = ["Google Vision OCR", "Google Document AI", "AWS Textract", "Gemini", "OpenAI", "Perplexity Verify"]
         st.session_state.selected_provider = st.selectbox("Select OCR Provider", providers, index=0)
 
