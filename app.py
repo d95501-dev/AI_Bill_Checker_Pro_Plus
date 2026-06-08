@@ -2,7 +2,6 @@ import base64
 import json
 import re
 import sqlite3
-import tempfile
 import os
 from datetime import datetime
 from io import BytesIO
@@ -11,8 +10,6 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 from PIL import Image
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer
 
 try:
     from pdf2image import convert_from_bytes
@@ -108,8 +105,6 @@ def init_runtime_state():
         "gemini_cooldown_seconds": 180,
         "gemini_retry_count": 0,
         "theme_mode": "light",
-        "history_search": "",
-        "history_status": "All",
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -145,7 +140,6 @@ def apply_theme_css():
             .stApp { background: #0b1220; color: #e5e7eb; }
             section[data-testid="stSidebar"] { background: #0f172a; }
             section[data-testid="stSidebar"] * { color: #f8fafc !important; }
-            .stMarkdown, .stText, .stDataFrame { color: #e5e7eb !important; }
             .stButton>button { background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important; color: white !important; border: none !important; }
             </style>
             """,
@@ -339,20 +333,35 @@ def heuristic_parse_from_text(text):
     gst_number = None
     bill_date = None
     total = None
+
     m = re.search(r"\bGSTIN[:\s]*([0-9A-Z]{15})\b", text, re.I)
     if m:
         gst_number = m.group(1)
+
     for p in [r"\b(\d{2}[/-]\d{2}[/-]\d{2,4})\b", r"\b(\d{4}[/-]\d{2}[/-]\d{2})\b"]:
         m = re.search(p, text)
         if m:
             bill_date = m.group(1)
             break
-    for p in [r"\bTotal[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b", r"\bGrand Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b"]:
+
+    for p in [
+        r"\bTotal[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
+        r"\bGrand Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
+        r"\bAmount[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
+    ]:
         m = re.search(p, text, re.I)
         if m:
             total = m.group(1)
             break
-    return {"shop_name": shop_name, "bill_date": bill_date, "gst_number": gst_number, "items": [], "total": total}
+
+    return {
+        "shop_name": shop_name,
+        "bill_date": bill_date,
+        "gst_number": gst_number,
+        "items": [],
+        "total": total,
+        "raw_text": text,
+    }
 
 
 def analyze_with_auto_fallback(model_bundle, image):
@@ -375,7 +384,7 @@ def analyze_with_auto_fallback(model_bundle, image):
                 if text.strip():
                     return heuristic_parse_from_text(text)
 
-            elif provider == "Google Document AI" and model_bundle.get("docai_client") and model_bundle.get("docai_name") and st.session_state.get("docai_enabled", True):
+            elif provider == "Google Document AI" and model_bundle.get("docai_client") and model_bundle.get("docai_name"):
                 content = image_to_bytes(image)
                 raw_document = documentai.RawDocument(content=content, mime_type="image/jpeg")
                 request = documentai.ProcessRequest(name=model_bundle["docai_name"], raw_document=raw_document)
@@ -384,7 +393,7 @@ def analyze_with_auto_fallback(model_bundle, image):
                 if text.strip():
                     return heuristic_parse_from_text(text)
 
-            elif provider == "AWS Textract" and model_bundle.get("textract_client") and st.session_state.get("textract_enabled", True):
+            elif provider == "AWS Textract" and model_bundle.get("textract_client"):
                 img_bytes = image_to_bytes(image)
                 resp = model_bundle["textract_client"].analyze_expense(Document={"Bytes": img_bytes})
                 text_parts = []
@@ -459,8 +468,7 @@ def analyze_with_auto_fallback(model_bundle, image):
 
 def insert_bill(shop, date, gst, total, calc_total, status):
     with sqlite3.connect(DB_PATH, timeout=30) as conn:
-        cur = conn.cursor()
-        cur.execute(
+        conn.execute(
             """
             INSERT OR IGNORE INTO bills
             (shop_name, bill_date, gst_number, total, calculated_total, status, timestamp)
@@ -475,70 +483,80 @@ def render_bill_result(data, source_name, save_to_db=False):
     if not isinstance(data, dict):
         st.error("AI se data nahi mil paaya.")
         return
-    shop_name = str(data.get("shop_name") or "Unknown Shop").strip()
-    bill_date = str(data.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
+
+    shop_name = str(data.get("shop_name") or "").strip() or "Unknown Shop"
+    bill_date = str(data.get("bill_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
     gst_number = data.get("gst_number") or "N/A"
-    st.markdown(f"### 🏪 Vendor: `{shop_name}`")
-    c1, c2 = st.columns(2)
-    c1.markdown(f"**🗓️ Declared Invoice Date:** {bill_date}")
-    is_valid_gst, formatted_gst = validate_gst(gst_number)
-    c2.markdown(
-        f"**🛡️ GSTIN Registry Validation:** {'✅ Valid - ' + formatted_gst if gst_number != 'N/A' and is_valid_gst else ('⚠️ Format Mismatch - ' + formatted_gst if gst_number != 'N/A' else 'ℹ️ Not Disclosed')}"
-    )
+
     items = normalize_items(data.get("items"))
     df = pd.DataFrame(items) if items else pd.DataFrame(columns=["name", "qty", "rate", "amount"])
+
     if not df.empty:
-        st.dataframe(df, use_container_width=True, hide_index=True)
         df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
         calculated_total = float(df["amount"].sum())
     else:
-        st.info("No items detected.")
         calculated_total = 0.0
+
     bill_total = safe_float(data.get("total", 0))
-    diff = abs(calculated_total - bill_total)
+    has_text = bool(str(data.get("raw_text") or "").strip())
+
+    if shop_name == "Unknown Shop" or bill_total == 0 or (not has_text and df.empty):
+        status = "Needs Review"
+    else:
+        status = "Matched" if abs(calculated_total - bill_total) < 1 else "Mismatch"
+
+    st.markdown(f"### 🏪 Vendor: `{shop_name}`")
+    st.write(f"Date: {bill_date}")
+    st.write(f"GSTIN: {gst_number}")
     st.metric("Summation of Extracted Items", f"₹{calculated_total:,.2f}")
     st.metric("Declared Invoice Total", f"₹{bill_total:,.2f}")
-    st.success("🎯 Auto-Arithmetic Audit Pass." if diff < 1 else f"🛑 Audit Discrepancy Found: ₹{diff:,.2f}")
+    st.info(f"Status: {status}")
+
     if save_to_db:
-        insert_bill(shop_name, bill_date, gst_number, bill_total, calculated_total, "Matched" if diff < 1 else "Mismatch")
+        insert_bill(shop_name, bill_date, gst_number, bill_total, calculated_total, status)
 
 
 def build_batch_summary(results):
     rows = []
     for item in results:
-        if item.get("data"):
-            d = item["data"]
+        d = item.get("data")
+        if d:
             items = normalize_items(d.get("items"))
             tmp_df = pd.DataFrame(items)
             calc_total = float(pd.to_numeric(tmp_df["amount"], errors="coerce").fillna(0).sum()) if not tmp_df.empty else 0.0
             total = safe_float(d.get("total", 0))
-            rows.append(
-                {
-                    "page": item.get("page"),
-                    "source": item.get("source"),
-                    "shop_name": str(d.get("shop_name") or "Unknown Shop").strip(),
-                    "bill_date": str(d.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip(),
-                    "gst_number": d.get("gst_number") or "N/A",
-                    "bill_total": total,
-                    "calculated_total": calc_total,
-                    "difference": abs(calc_total - total),
-                    "status": "Matched" if abs(calc_total - total) < 1 else "Mismatch",
-                }
-            )
+            shop = str(d.get("shop_name") or "").strip() or "Unknown Shop"
+            bill_date = str(d.get("bill_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+            has_text = bool(str(d.get("raw_text") or "").strip())
+
+            if shop == "Unknown Shop" or total == 0 or (not has_text and tmp_df.empty):
+                status = "Needs Review"
+            else:
+                status = "Matched" if abs(calc_total - total) < 1 else "Mismatch"
+
+            rows.append({
+                "page": item.get("page"),
+                "source": item.get("source"),
+                "shop_name": shop,
+                "bill_date": bill_date,
+                "gst_number": d.get("gst_number") or "N/A",
+                "bill_total": total,
+                "calculated_total": calc_total,
+                "difference": abs(calc_total - total),
+                "status": status,
+            })
         else:
-            rows.append(
-                {
-                    "page": item.get("page"),
-                    "source": item.get("source"),
-                    "shop_name": None,
-                    "bill_date": None,
-                    "gst_number": None,
-                    "bill_total": None,
-                    "calculated_total": None,
-                    "difference": None,
-                    "status": f"Error: {item.get('error')}",
-                }
-            )
+            rows.append({
+                "page": item.get("page"),
+                "source": item.get("source"),
+                "shop_name": "Unknown Shop",
+                "bill_date": None,
+                "gst_number": None,
+                "bill_total": None,
+                "calculated_total": None,
+                "difference": None,
+                "status": f"Error: {item.get('error')}",
+            })
     return pd.DataFrame(rows)
 
 
