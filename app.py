@@ -395,6 +395,8 @@ def analyze_openai(client, image):
 
 
 def analyze_perplexity(api_key, image):
+    if not api_key:
+        raise RuntimeError("Perplexity API key missing")
     b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
     payload = {
         "model": secret_or_default("PERPLEXITY_MODEL", "sonar-pro"),
@@ -412,10 +414,12 @@ def analyze_perplexity(api_key, image):
     }
     r = requests.post(
         "https://api.perplexity.ai/chat/completions",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        headers={"Authorization": f"Bearer {api_key.strip()}", "Content-Type": "application/json"},
         json=payload,
         timeout=PROCESSING_TIMEOUT_SECONDS,
     )
+    if r.status_code == 401:
+        raise RuntimeError("Perplexity API unauthorized: check API key")
     r.raise_for_status()
     return parse_json_from_response(r.json()["choices"][0]["message"]["content"])
 
@@ -498,7 +502,10 @@ def analyze_with_auto_fallback(model_bundle, image):
                 if model_bundle.get("openai"):
                     return analyze_openai(model_bundle["openai"], preprocess_image_for_ocr(image))
                 if model_bundle.get("perplexity_key") and st.session_state.get("perplexity_enabled", False):
-                    return analyze_perplexity(model_bundle["perplexity_key"], preprocess_image_for_ocr(image))
+                    try:
+                        return analyze_perplexity(model_bundle["perplexity_key"], preprocess_image_for_ocr(image))
+                    except Exception as e:
+                        st.warning(f"Perplexity skipped: {e}")
                 return heuristic_parse_from_text("")
 
         if provider == "Google Document AI" and st.session_state.get("docai_enabled", False):
@@ -593,17 +600,28 @@ def insert_bill(shop, date, gst, total, calc_total, status):
 
 
 def export_payload(df, base_name, widget_key):
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Data")
-    st.download_button(
-        "📥 Export Excel Data Sheets",
-        data=buffer.getvalue(),
-        file_name=f"{base_name}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True,
-        key=f"excel_{widget_key}",
-    )
+    try:
+        buffer = BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Data")
+        st.download_button(
+            "📥 Export Excel Data Sheets",
+            data=buffer.getvalue(),
+            file_name=f"{base_name}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key=f"excel_{widget_key}",
+        )
+    except Exception:
+        csv_data = df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "📥 Download CSV Instead",
+            data=csv_data,
+            file_name=f"{base_name}.csv",
+            mime="text/csv",
+            use_container_width=True,
+            key=f"csv_{widget_key}",
+        )
 
 
 def export_pdf(shop_name, bill_date, gst_number, bill_total, widget_key):
@@ -632,14 +650,17 @@ def render_bill_result(data, source_name, save_to_db=False):
     if not isinstance(data, dict):
         st.error("AI se data nahi mil paaya.")
         return
+
     shop_name = str(data.get("shop_name") or "Unknown Shop").strip()
     bill_date = str(data.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
     gst_number = data.get("gst_number") or "N/A"
     safe_shop = re.sub(r"[^A-Za-z0-9_-]+", "_", shop_name)
     safe_source = re.sub(r"[^A-Za-z0-9_-]+", "_", str(source_name))
+
     st.markdown(f"### 🏪 Vendor: `{shop_name}`")
     c1, c2 = st.columns(2)
     c1.markdown(f"**🗓️ Declared Invoice Date:** {bill_date}")
+
     is_valid_gst, formatted_gst = validate_gst(gst_number)
     if gst_number != "N/A" and is_valid_gst:
         c2.markdown(f"**🛡️ GSTIN Registry Validation:** :green[✅ Valid - {formatted_gst}]")
@@ -647,6 +668,7 @@ def render_bill_result(data, source_name, save_to_db=False):
         c2.markdown(f"**🛡️ GSTIN Registry Validation:** :orange[⚠️ Format Mismatch - {formatted_gst}]")
     else:
         c2.markdown("**🛡️ GSTIN Registry Validation:** :red[ℹ️ Not Disclosed]")
+
     items = normalize_items(data.get("items"))
     if items:
         df = pd.DataFrame(items)
@@ -657,19 +679,25 @@ def render_bill_result(data, source_name, save_to_db=False):
         df = pd.DataFrame(columns=["name", "qty", "rate", "amount"])
         calculated_total = 0.0
         st.info("No items detected.")
+
     bill_total = safe_float(data.get("total", 0))
     diff = abs(calculated_total - bill_total)
     status_txt = "Matched" if diff < 1 else "Mismatch"
+
     c3, c4 = st.columns(2)
     c3.metric("Summation of Extracted Items", f"₹{calculated_total:,.2f}")
     c4.metric("Declared Invoice Total", f"₹{bill_total:,.2f}")
+
     if status_txt == "Matched":
         st.success("🎯 Auto-Arithmetic Audit Pass.")
     else:
         st.error(f"🛑 Audit Discrepancy Found: ₹{diff:,.2f}")
+
     render_print_preview(shop_name, bill_date, gst_number, bill_total, df)
+
     if save_to_db and insert_bill(shop_name, bill_date, gst_number, bill_total, calculated_total, status_txt):
         st.toast("Saved to DB", icon="💾")
+
     export_payload(df, safe_shop + "_ledger", safe_source)
     export_pdf(shop_name, bill_date, gst_number, bill_total, safe_source)
 
@@ -714,10 +742,14 @@ def build_batch_summary(results):
 
 
 def make_excel_download(df, filename, label="📥 Download Excel", key="excel_download"):
-    buffer = BytesIO()
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="Batch Summary")
-    st.download_button(label, data=buffer.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key=key)
+    try:
+        buffer = BytesIO()
+        with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+            df.to_excel(writer, index=False, sheet_name="Batch Summary")
+        st.download_button(label, data=buffer.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", use_container_width=True, key=key)
+    except Exception:
+        csv_data = df.to_csv(index=False).encode("utf-8")
+        st.download_button("📥 Download CSV Instead", data=csv_data, file_name=filename.replace(".xlsx", ".csv"), mime="text/csv", use_container_width=True, key=key + "_csv")
 
 
 def render_theme_toggle():
