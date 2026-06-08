@@ -4,7 +4,6 @@ import re
 import sqlite3
 import tempfile
 import os
-import sys
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -69,7 +68,12 @@ DEFAULT_PASSWORD = secret_or_default("APP_PASSWORD", "password123")
 
 
 def setup_page():
-    st.set_page_config(page_title=APP_TITLE, page_icon="🧾", layout="wide", initial_sidebar_state="expanded")
+    st.set_page_config(
+        page_title=APP_TITLE,
+        page_icon="🧾",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
 
 
 def init_db():
@@ -101,21 +105,11 @@ def init_runtime_state():
         "selected_provider": "Google Vision OCR",
         "gemini_available": True,
         "last_gemini_error_time": None,
-        "gemini_cooldown_seconds": 900,
+        "gemini_cooldown_seconds": 180,
         "gemini_retry_count": 0,
-        "perplexity_enabled": True,
-        "docai_enabled": True,
-        "vision_enabled": True,
-        "textract_enabled": True,
         "theme_mode": "light",
         "history_search": "",
-        "history_shop": "",
-        "history_gst": "",
         "history_status": "All",
-        "history_min_amount": "",
-        "history_max_amount": "",
-        "history_date_from": None,
-        "history_date_to": None,
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -151,8 +145,8 @@ def apply_theme_css():
             .stApp { background: #0b1220; color: #e5e7eb; }
             section[data-testid="stSidebar"] { background: #0f172a; }
             section[data-testid="stSidebar"] * { color: #f8fafc !important; }
-            .stButton>button { background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important; color: white !important; }
-            .stDataFrame, .stMarkdown, .stText { color: #e5e7eb !important; }
+            .stMarkdown, .stText, .stDataFrame { color: #e5e7eb !important; }
+            .stButton>button { background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important; color: white !important; border: none !important; }
             </style>
             """,
             unsafe_allow_html=True,
@@ -174,8 +168,6 @@ def apply_css():
     st.markdown(
         """
         <style>
-        .main { background-color: #f8fafc; }
-        h1, h2, h3, h4 { font-family: system-ui, sans-serif !important; color: #0f172a !important; font-weight: 800 !important; }
         .deep-csc-header {
             background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #311042 100%);
             padding: 30px; border-radius: 24px; margin-bottom: 20px;
@@ -185,7 +177,7 @@ def apply_css():
         .branding-text h1 {
             background: linear-gradient(to right, #38bdf8, #c084fc, #f43f5e);
             -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-            margin: 0; font-size: 34px !important; letter-spacing: -0.5px;
+            margin: 0; font-size: 34px !important;
         }
         .csc-meta-badge {
             background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.15);
@@ -250,6 +242,19 @@ def setup_textract():
     )
 
 
+def setup_docai():
+    if documentai is None:
+        return None, None
+    project_id = secret_or_default("GCP_PROJECT_ID", "").strip()
+    location = secret_or_default("DOC_AI_LOCATION", "us").strip()
+    processor_id = secret_or_default("DOC_AI_PROCESSOR_ID", "").strip()
+    if not project_id or not processor_id:
+        return None, None
+    client = documentai.DocumentProcessorServiceClient()
+    name = client.processor_path(project_id, location, processor_id)
+    return client, name
+
+
 def validate_gst(gst_str):
     if not gst_str:
         return False, "N/A"
@@ -264,7 +269,14 @@ def normalize_items(items):
         return cleaned
     for it in items:
         if isinstance(it, dict):
-            cleaned.append({"name": it.get("name") or "", "qty": it.get("qty") or "", "rate": it.get("rate") or "", "amount": it.get("amount") or ""})
+            cleaned.append(
+                {
+                    "name": it.get("name") or "",
+                    "qty": it.get("qty") or "",
+                    "rate": it.get("rate") or "",
+                    "amount": it.get("amount") or "",
+                }
+            )
     return cleaned
 
 
@@ -291,7 +303,7 @@ def can_try_gemini():
     last_error = st.session_state.get("last_gemini_error_time")
     if not last_error:
         return True
-    cooldown = st.session_state.get("gemini_cooldown_seconds", 900)
+    cooldown = st.session_state.get("gemini_cooldown_seconds", 180)
     return (datetime.now() - last_error).total_seconds() >= cooldown
 
 
@@ -316,7 +328,7 @@ Rules:
 
 def image_to_bytes(image):
     buf = BytesIO()
-    image.save(buf, format="JPEG", quality=95)
+    image.save(buf, format="JPEG", quality=85)
     return buf.getvalue()
 
 
@@ -344,40 +356,104 @@ def heuristic_parse_from_text(text):
 
 
 def analyze_with_auto_fallback(model_bundle, image):
-    if model_bundle.get("vision_client") and st.session_state.get("vision_enabled", True):
+    providers = [
+        "Google Vision OCR",
+        "Google Document AI",
+        "AWS Textract",
+        "Gemini",
+        "OpenAI",
+        "Perplexity",
+    ]
+
+    for provider in providers:
         try:
-            b = image_to_bytes(image)
-            img = vision.Image(content=b)
-            resp = model_bundle["vision_client"].document_text_detection(image=img)
-            text = getattr(getattr(resp, "full_text_annotation", None), "text", "") or ""
-            return heuristic_parse_from_text(text)
+            if provider == "Google Vision OCR" and model_bundle.get("vision_client") and st.session_state.get("vision_enabled", True):
+                b = image_to_bytes(image)
+                img = vision.Image(content=b)
+                resp = model_bundle["vision_client"].document_text_detection(image=img)
+                text = getattr(getattr(resp, "full_text_annotation", None), "text", "") or ""
+                if text.strip():
+                    return heuristic_parse_from_text(text)
+
+            elif provider == "Google Document AI" and model_bundle.get("docai_client") and model_bundle.get("docai_name") and st.session_state.get("docai_enabled", True):
+                content = image_to_bytes(image)
+                raw_document = documentai.RawDocument(content=content, mime_type="image/jpeg")
+                request = documentai.ProcessRequest(name=model_bundle["docai_name"], raw_document=raw_document)
+                result = model_bundle["docai_client"].process_document(request=request)
+                text = getattr(result.document, "text", "") or ""
+                if text.strip():
+                    return heuristic_parse_from_text(text)
+
+            elif provider == "AWS Textract" and model_bundle.get("textract_client") and st.session_state.get("textract_enabled", True):
+                img_bytes = image_to_bytes(image)
+                resp = model_bundle["textract_client"].analyze_expense(Document={"Bytes": img_bytes})
+                text_parts = []
+                for d in resp.get("ExpenseDocuments", []):
+                    for sf in d.get("SummaryFields", []):
+                        text_parts.append(
+                            f"{sf.get('Type', {}).get('Text', '')}: {sf.get('ValueDetection', {}).get('Text', '')}"
+                        )
+                text = "\n".join(text_parts)
+                if text.strip():
+                    return heuristic_parse_from_text(text)
+
+            elif provider == "Gemini" and model_bundle.get("gemini") and can_try_gemini():
+                resp = model_bundle["gemini"].generate_content([build_schema_prompt(), image])
+                data = parse_json_from_response(getattr(resp, "text", ""))
+                st.session_state.gemini_available = True
+                st.session_state.last_gemini_error_time = None
+                st.session_state.gemini_retry_count = 0
+                return data
+
+            elif provider == "OpenAI" and model_bundle.get("openai"):
+                b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
+                resp = model_bundle["openai"].chat.completions.create(
+                    model=secret_or_default("OPENAI_MODEL", "gpt-4o-mini"),
+                    messages=[
+                        {"role": "system", "content": build_schema_prompt()},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Extract invoice JSON from this image."},
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                            ],
+                        },
+                    ],
+                    response_format={"type": "json_object"},
+                )
+                return parse_json_from_response(resp.choices[0].message.content)
+
+            elif provider == "Perplexity" and model_bundle.get("perplexity_key") and requests is not None:
+                b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
+                payload = {
+                    "model": secret_or_default("PERPLEXITY_MODEL", "sonar-pro"),
+                    "messages": [
+                        {"role": "system", "content": build_schema_prompt()},
+                        {
+                            "role": "user",
+                            "content": [
+                                {"type": "text", "text": "Extract invoice JSON from this image."},
+                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                            ],
+                        },
+                    ],
+                    "temperature": 0.0,
+                }
+                r = requests.post(
+                    "https://api.perplexity.ai/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {model_bundle['perplexity_key']}",
+                        "Content-Type": "application/json",
+                    },
+                    json=payload,
+                    timeout=60,
+                )
+                r.raise_for_status()
+                return parse_json_from_response(r.json()["choices"][0]["message"]["content"])
+
         except Exception:
-            pass
-    if model_bundle.get("gemini") and can_try_gemini():
-        try:
-            resp = model_bundle["gemini"].generate_content([build_schema_prompt(), image])
-            data = parse_json_from_response(getattr(resp, "text", ""))
-            st.session_state.gemini_available = True
-            st.session_state.last_gemini_error_time = None
-            st.session_state.gemini_retry_count = 0
-            return data
-        except Exception as e:
-            st.session_state.gemini_available = False
-            st.session_state.last_gemini_error_time = datetime.now()
-    if model_bundle.get("openai"):
-        try:
-            b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
-            resp = model_bundle["openai"].chat.completions.create(
-                model=secret_or_default("OPENAI_MODEL", "gpt-4o-mini"),
-                messages=[
-                    {"role": "system", "content": build_schema_prompt()},
-                    {"role": "user", "content": [{"type": "text", "text": "Extract invoice JSON from this image."}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}}]},
-                ],
-                response_format={"type": "json_object"},
-            )
-            return parse_json_from_response(resp.choices[0].message.content)
-        except Exception:
-            pass
+            continue
+
     return heuristic_parse_from_text("")
 
 
@@ -406,7 +482,9 @@ def render_bill_result(data, source_name, save_to_db=False):
     c1, c2 = st.columns(2)
     c1.markdown(f"**🗓️ Declared Invoice Date:** {bill_date}")
     is_valid_gst, formatted_gst = validate_gst(gst_number)
-    c2.markdown(f"**🛡️ GSTIN Registry Validation:** {'✅ Valid - ' + formatted_gst if gst_number != 'N/A' and is_valid_gst else ('⚠️ Format Mismatch - ' + formatted_gst if gst_number != 'N/A' else 'ℹ️ Not Disclosed')}")
+    c2.markdown(
+        f"**🛡️ GSTIN Registry Validation:** {'✅ Valid - ' + formatted_gst if gst_number != 'N/A' and is_valid_gst else ('⚠️ Format Mismatch - ' + formatted_gst if gst_number != 'N/A' else 'ℹ️ Not Disclosed')}"
+    )
     items = normalize_items(data.get("items"))
     df = pd.DataFrame(items) if items else pd.DataFrame(columns=["name", "qty", "rate", "amount"])
     if not df.empty:
@@ -434,9 +512,33 @@ def build_batch_summary(results):
             tmp_df = pd.DataFrame(items)
             calc_total = float(pd.to_numeric(tmp_df["amount"], errors="coerce").fillna(0).sum()) if not tmp_df.empty else 0.0
             total = safe_float(d.get("total", 0))
-            rows.append({"page": item.get("page"), "source": item.get("source"), "shop_name": str(d.get("shop_name") or "Unknown Shop").strip(), "bill_date": str(d.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip(), "gst_number": d.get("gst_number") or "N/A", "bill_total": total, "calculated_total": calc_total, "difference": abs(calc_total - total), "status": "Matched" if abs(calc_total - total) < 1 else "Mismatch"})
+            rows.append(
+                {
+                    "page": item.get("page"),
+                    "source": item.get("source"),
+                    "shop_name": str(d.get("shop_name") or "Unknown Shop").strip(),
+                    "bill_date": str(d.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip(),
+                    "gst_number": d.get("gst_number") or "N/A",
+                    "bill_total": total,
+                    "calculated_total": calc_total,
+                    "difference": abs(calc_total - total),
+                    "status": "Matched" if abs(calc_total - total) < 1 else "Mismatch",
+                }
+            )
         else:
-            rows.append({"page": item.get("page"), "source": item.get("source"), "shop_name": None, "bill_date": None, "gst_number": None, "bill_total": None, "calculated_total": None, "difference": None, "status": f"Error: {item.get('error')}"})
+            rows.append(
+                {
+                    "page": item.get("page"),
+                    "source": item.get("source"),
+                    "shop_name": None,
+                    "bill_date": None,
+                    "gst_number": None,
+                    "bill_total": None,
+                    "calculated_total": None,
+                    "difference": None,
+                    "status": f"Error: {item.get('error')}",
+                }
+            )
     return pd.DataFrame(rows)
 
 
@@ -468,16 +570,32 @@ def render_upload_module():
         """,
         unsafe_allow_html=True,
     )
+
     tabs = st.tabs(["📷 Scan / Upload", "🕘 History", "⚙️ Settings"])
+
     with tabs[0]:
-        providers = ["Google Vision OCR", "Google Document AI", "AWS Textract", "Gemini", "OpenAI"]
+        providers = ["Google Vision OCR", "Google Document AI", "AWS Textract", "Gemini", "OpenAI", "Perplexity"]
         st.session_state.selected_provider = st.selectbox("Select OCR Provider", providers, index=0)
+
         uploaded_file = st.file_uploader("Upload Bill Image or PDF", type=["jpg", "jpeg", "png", "pdf"])
+
         vision_client = setup_google_vision()
         gemini_model = setup_gemini()
         openai_client = setup_openai()
         textract_client = setup_textract()
-        model_bundle = {"vision_client": vision_client, "gemini": gemini_model, "openai": openai_client, "textract_client": textract_client}
+        docai_client, docai_name = setup_docai()
+        perplexity_key = secret_or_default("PERPLEXITY_API_KEY", "").strip()
+
+        model_bundle = {
+            "vision_client": vision_client,
+            "docai_client": docai_client,
+            "docai_name": docai_name,
+            "gemini": gemini_model,
+            "openai": openai_client,
+            "textract_client": textract_client,
+            "perplexity_key": perplexity_key,
+        }
+
         if uploaded_file:
             file_bytes = uploaded_file.read()
             if uploaded_file.name.lower().endswith(".pdf"):
@@ -485,7 +603,7 @@ def render_upload_module():
                     if convert_from_bytes is None:
                         st.error("pdf2image not installed.")
                     else:
-                        pages = convert_from_bytes(file_bytes, dpi=300)
+                        pages = convert_from_bytes(file_bytes, dpi=180)
                         results = []
                         for idx, page_img in enumerate(pages, start=1):
                             try:
@@ -502,11 +620,16 @@ def render_upload_module():
                 if st.button("Process Image", use_container_width=True):
                     data = analyze_with_auto_fallback(model_bundle, image)
                     render_bill_result(data, uploaded_file.name, save_to_db=True)
+
     with tabs[1]:
         st.subheader("History")
         with sqlite3.connect(DB_PATH, timeout=30) as conn:
-            df = pd.read_sql_query("SELECT shop_name, bill_date, gst_number, total, calculated_total, status, timestamp FROM bills ORDER BY id DESC LIMIT 50", conn)
+            df = pd.read_sql_query(
+                "SELECT shop_name, bill_date, gst_number, total, calculated_total, status, timestamp FROM bills ORDER BY id DESC LIMIT 50",
+                conn,
+            )
         st.dataframe(df, use_container_width=True, hide_index=True)
+
     with tabs[2]:
         st.subheader("Settings")
         render_theme_toggle()
@@ -519,13 +642,26 @@ def main():
     init_runtime_state()
     apply_theme_css()
     apply_css()
+
     if not st.session_state.logged_in:
         do_login()
+
     with st.sidebar:
-        st.markdown("""<div style="padding:12px;border:1px solid rgba(255,255,255,0.14);border-radius:14px;"><div style="font-size:22px;font-weight:800;">Deep CSC</div><div style="font-size:16px;font-weight:700;margin-top:4px;">AI Bill Processor</div><div style="font-size:13px;opacity:0.95;margin-top:8px;">ID: 256423250015</div><div style="font-size:12px;opacity:0.9;margin-top:10px;">Provider-ready OCR and invoice processing dashboard.</div></div>""", unsafe_allow_html=True)
+        st.markdown(
+            """
+            <div style="padding:12px;border:1px solid rgba(255,255,255,0.14);border-radius:14px;">
+                <div style="font-size:22px;font-weight:800;">Deep CSC</div>
+                <div style="font-size:16px;font-weight:700;margin-top:4px;">AI Bill Processor</div>
+                <div style="font-size:13px;opacity:0.95;margin-top:8px;">ID: 256423250015</div>
+                <div style="font-size:12px;opacity:0.9;margin-top:10px;">Provider-ready OCR and invoice processing dashboard.</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
         render_theme_toggle()
         if st.button("Logout", use_container_width=True):
             terminate_session()
+
     render_upload_module()
 
 
