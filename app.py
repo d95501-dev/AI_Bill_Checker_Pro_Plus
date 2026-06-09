@@ -154,7 +154,6 @@ def apply_theme_css():
             section[data-testid="stSidebar"] { background: #0f172a; }
             section[data-testid="stSidebar"] * { color: #f8fafc !important; }
             .stButton>button { background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important; color: white !important; }
-            .stDataFrame, .stMarkdown, .stText { color: #e5e7eb !important; }
             </style>
         """, unsafe_allow_html=True)
     else:
@@ -231,9 +230,7 @@ def setup_perplexity():
 
 @st.cache_resource
 def setup_google_vision():
-    if vision is None:
-        return None
-    return vision.ImageAnnotatorClient()
+    return vision.ImageAnnotatorClient() if vision is not None else None
 
 
 @st.cache_resource
@@ -268,8 +265,7 @@ def get_drive_service():
     if service_account is None or build is None or not os.path.exists(service_account_file):
         return None
     creds = service_account.Credentials.from_service_account_file(
-        service_account_file,
-        scopes=["https://www.googleapis.com/auth/drive"],
+        service_account_file, scopes=["https://www.googleapis.com/auth/drive"]
     )
     return build("drive", "v3", credentials=creds)
 
@@ -295,9 +291,9 @@ def validate_gst(gst_str):
 
 
 def normalize_items(items):
-    cleaned = []
     if not isinstance(items, list):
-        return cleaned
+        return []
+    cleaned = []
     for it in items:
         if isinstance(it, dict):
             cleaned.append({
@@ -310,9 +306,7 @@ def normalize_items(items):
 
 
 def parse_json_from_response(response_text):
-    if not response_text:
-        raise ValueError("Empty response from model")
-    raw = response_text.strip().replace("```json", "").replace("```", "").strip()
+    raw = (response_text or "").strip().replace("```json", "").replace("```", "").strip()
     m = re.search(r"\{.*\}", raw, re.DOTALL)
     if m:
         raw = m.group(0)
@@ -330,9 +324,7 @@ def can_try_gemini():
     if st.session_state.get("gemini_available", True):
         return True
     last_error = st.session_state.get("last_gemini_error_time")
-    if not last_error:
-        return True
-    return (datetime.now() - last_error).total_seconds() >= st.session_state.get("gemini_cooldown_seconds", 900)
+    return (not last_error) or ((datetime.now() - last_error).total_seconds() >= st.session_state.get("gemini_cooldown_seconds", 900))
 
 
 def is_gemini_quota_error(err):
@@ -446,8 +438,14 @@ def heuristic_parse_from_text(text):
             total = m.group(1)
             break
 
-    items = heuristic_extract_items(text)
-    return {"shop_name": shop_name, "bill_date": bill_date, "gst_number": gst_number, "items": items, "total": total, "raw_text": text}
+    return {
+        "shop_name": shop_name,
+        "bill_date": bill_date,
+        "gst_number": gst_number,
+        "items": heuristic_extract_items(text),
+        "total": total,
+        "raw_text": text,
+    }
 
 
 def try_gemini(model, image):
@@ -497,9 +495,7 @@ def analyze_with_auto_fallback(model_bundle, image, forced=None):
                 text_parts = []
                 for d in resp.get("ExpenseDocuments", []):
                     for sf in d.get("SummaryFields", []):
-                        text_parts.append(
-                            f"{sf.get('Type', {}).get('Text', '')}: {sf.get('ValueDetection', {}).get('Text', '')}"
-                        )
+                        text_parts.append(f"{sf.get('Type', {}).get('Text', '')}: {sf.get('ValueDetection', {}).get('Text', '')}")
                 text = "\n".join(text_parts)
                 if text:
                     return heuristic_parse_from_text(text)
@@ -510,13 +506,10 @@ def analyze_with_auto_fallback(model_bundle, image, forced=None):
                     model=secret_or_default("OPENAI_MODEL", "gpt-4o-mini"),
                     messages=[
                         {"role": "system", "content": build_schema_prompt()},
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": "Extract invoice JSON from this image."},
-                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
-                            ],
-                        },
+                        {"role": "user", "content": [
+                            {"type": "text", "text": "Extract invoice JSON from this image."},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
+                        ]},
                     ],
                     response_format={"type": "json_object"},
                 )
@@ -528,13 +521,10 @@ def analyze_with_auto_fallback(model_bundle, image, forced=None):
                     model=secret_or_default("PERPLEXITY_MODEL", "sonar-pro"),
                     messages=[
                         {"role": "system", "content": build_schema_prompt()},
-                        {
-                            "role": "user",
-                            "content": [
-                                {"type": "text", "text": "Extract invoice JSON from this image."},
-                                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
-                            ],
-                        },
+                        {"role": "user", "content": [
+                            {"type": "text", "text": "Extract invoice JSON from this image."},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
+                        ]},
                     ],
                     temperature=0.0,
                 )
@@ -556,6 +546,84 @@ def insert_bill(shop, date, gst, total, calc_total, status):
             (shop, date, gst, total, calc_total, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
         )
         conn.commit()
+
+
+def sanitize_sheet_name(name, fallback="Sheet"):
+    name = re.sub(r"[\[\]\*\?/\\:]", "_", str(name)).strip()
+    name = re.sub(r"\s+", " ", name)
+    return (name[:31] or fallback)
+
+
+def build_excel_export(results):
+    buffer = BytesIO()
+    summary_rows = []
+
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for idx, item in enumerate(results, start=1):
+            d = item.get("data") or {}
+            raw_text = str(d.get("raw_text") or "").strip()
+            items = normalize_items(d.get("items"))
+
+            shop = str(d.get("shop_name") or "").strip()
+            if not shop and raw_text:
+                for ln in [x.strip() for x in raw_text.splitlines() if x.strip()][:10]:
+                    if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
+                        shop = ln[:80]
+                        break
+            if not shop:
+                shop = f"Bill_{idx}"
+
+            bill_date = str(d.get("bill_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+            gst_number = d.get("gst_number") or "N/A"
+            bill_total = safe_float(d.get("total", 0))
+
+            tmp_df = pd.DataFrame(items) if items else pd.DataFrame(columns=["name", "qty", "rate", "amount"])
+            if not tmp_df.empty:
+                tmp_df["amount"] = pd.to_numeric(tmp_df["amount"], errors="coerce").fillna(0)
+                calculated_total = float(tmp_df["amount"].sum())
+            else:
+                calculated_total = 0.0
+
+            status = "Needs Review"
+            if bill_total > 0:
+                status = "Matched" if abs(calculated_total - bill_total) < 1 else "Mismatch"
+
+            base_name = sanitize_sheet_name(f"{idx}_{shop}")
+            tmp_df.to_excel(writer, sheet_name=base_name, index=False)
+
+            meta_df = pd.DataFrame([{
+                "page": item.get("page"),
+                "source": item.get("source"),
+                "shop_name": shop,
+                "bill_date": bill_date,
+                "gst_number": gst_number,
+                "declared_total": bill_total,
+                "calculated_total": calculated_total,
+                "difference": abs(calculated_total - bill_total),
+                "status": status
+            }])
+            meta_df.to_excel(writer, sheet_name=sanitize_sheet_name(f"{base_name}_meta"), index=False)
+
+            if raw_text:
+                pd.DataFrame({"raw_text": [raw_text]}).to_excel(writer, sheet_name=sanitize_sheet_name(f"{base_name}_text"), index=False)
+
+            summary_rows.append({
+                "bill_no": idx,
+                "source": item.get("source"),
+                "shop_name": shop,
+                "bill_date": bill_date,
+                "gst_number": gst_number,
+                "declared_total": bill_total,
+                "calculated_total": calculated_total,
+                "difference": abs(calculated_total - bill_total),
+                "status": status,
+                "sheet_name": base_name
+            })
+
+        pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Summary", index=False)
+
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 def render_bill_result(data, source_name, save_to_db=False, upload_drive=True):
@@ -661,11 +729,7 @@ def build_batch_summary(results):
                 shop = "Unknown Shop"
             if not bill_date:
                 bill_date = datetime.now().strftime("%Y-%m-%d")
-            has_meaningful_data = bool(raw_text) or not tmp_df.empty or total > 0 or shop != "Unknown Shop"
-            if not has_meaningful_data:
-                status = "Needs Review"
-            else:
-                status = "Matched" if total > 0 and abs(calc_total - total) < 1 else ("Mismatch" if total > 0 else "Needs Review")
+            status = "Needs Review" if total <= 0 else ("Matched" if abs(calc_total - total) < 1 else "Mismatch")
             rows.append({
                 "page": item.get("page"),
                 "source": item.get("source"),
@@ -692,90 +756,6 @@ def build_batch_summary(results):
     return pd.DataFrame(rows)
 
 
-def sanitize_sheet_name(name, fallback="Sheet"):
-    name = re.sub(r"[\[\]\*\?/\\:]", "_", str(name)).strip()
-    name = re.sub(r"\s+", " ", name)
-    return (name[:31] or fallback)
-
-
-def build_excel_export(results):
-    buffer = BytesIO()
-    summary_rows = []
-
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        for idx, item in enumerate(results, start=1):
-            d = item.get("data") or {}
-            raw_text = str(d.get("raw_text") or "").strip()
-            items = normalize_items(d.get("items"))
-
-            shop = str(d.get("shop_name") or "").strip()
-            if not shop and raw_text:
-                for ln in [x.strip() for x in raw_text.splitlines() if x.strip()][:10]:
-                    if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
-                        shop = ln[:80]
-                        break
-            if not shop:
-                shop = f"Bill_{idx}"
-
-            bill_date = str(d.get("bill_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
-            gst_number = d.get("gst_number") or "N/A"
-            bill_total = safe_float(d.get("total", 0))
-
-            tmp_df = pd.DataFrame(items) if items else pd.DataFrame(columns=["name", "qty", "rate", "amount"])
-            if not tmp_df.empty and "amount" in tmp_df.columns:
-                tmp_df["amount"] = pd.to_numeric(tmp_df["amount"], errors="coerce").fillna(0)
-                calculated_total = float(tmp_df["amount"].sum())
-            else:
-                calculated_total = 0.0
-
-            has_meaningful_data = bool(raw_text) or not tmp_df.empty or bill_total > 0
-            if not has_meaningful_data:
-                status = "Needs Review"
-            else:
-                status = "Matched" if bill_total > 0 and abs(calculated_total - bill_total) < 1 else ("Mismatch" if bill_total > 0 else "Needs Review")
-
-            base_name = sanitize_sheet_name(f"{idx}_{shop}")
-            items_sheet = base_name
-            meta_sheet = sanitize_sheet_name(f"{base_name}_meta")
-            text_sheet = sanitize_sheet_name(f"{base_name}_text")
-
-            tmp_df.to_excel(writer, sheet_name=items_sheet, index=False)
-
-            meta_df = pd.DataFrame([{
-                "page": item.get("page"),
-                "source": item.get("source"),
-                "shop_name": shop,
-                "bill_date": bill_date,
-                "gst_number": gst_number,
-                "declared_total": bill_total,
-                "calculated_total": calculated_total,
-                "difference": abs(calculated_total - bill_total),
-                "status": status
-            }])
-            meta_df.to_excel(writer, sheet_name=meta_sheet, index=False)
-
-            if raw_text:
-                pd.DataFrame({"raw_text": [raw_text]}).to_excel(writer, sheet_name=text_sheet, index=False)
-
-            summary_rows.append({
-                "bill_no": idx,
-                "source": item.get("source"),
-                "shop_name": shop,
-                "bill_date": bill_date,
-                "gst_number": gst_number,
-                "declared_total": bill_total,
-                "calculated_total": calculated_total,
-                "difference": abs(calculated_total - bill_total),
-                "status": status,
-                "sheet_name": items_sheet
-            })
-
-        pd.DataFrame(summary_rows).to_excel(writer, sheet_name="Summary", index=False)
-
-    buffer.seek(0)
-    return buffer.getvalue()
-
-
 def render_theme_toggle(location="main"):
     mode = st.radio(
         "Theme",
@@ -790,8 +770,7 @@ def render_theme_toggle(location="main"):
 
 
 def render_upload_module():
-    st.markdown(
-        """
+    st.markdown("""
         <div class="deep-csc-header">
             <div class="branding-text">
                 <h1>🧾 AI Multi-Bill OCR Processor</h1>
@@ -800,9 +779,7 @@ def render_upload_module():
             <div class="csc-meta-badge">📍 <b>Deep CSC</b><br>👤 Owner: Deepak | ID: 256423250015</div>
             <div class="branding-badge">Deep CSC AI</div>
         </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    """, unsafe_allow_html=True)
 
     tabs = st.tabs(["📷 Scan / Upload", "🕘 History", "⚙️ Settings"])
 
@@ -811,21 +788,14 @@ def render_upload_module():
         st.session_state.selected_provider = st.selectbox("Select OCR Provider", providers, index=providers.index("Gemini"), key="provider_selectbox")
         uploaded_file = st.file_uploader("Upload Bill Image or PDF", type=["jpg", "jpeg", "png", "pdf"])
 
-        vision_client = setup_google_vision()
-        gemini_model = setup_gemini()
-        openai_client = setup_openai()
-        perplexity_client = setup_perplexity()
-        textract_client = setup_textract()
-        docai_client, docai_name = setup_docai()
-
         model_bundle = {
-            "vision_client": vision_client,
-            "docai_client": docai_client,
-            "docai_name": docai_name,
-            "gemini": gemini_model,
-            "openai": openai_client,
-            "perplexity": perplexity_client,
-            "textract_client": textract_client,
+            "vision_client": setup_google_vision(),
+            "docai_client": setup_docai()[0],
+            "docai_name": setup_docai()[1],
+            "gemini": setup_gemini(),
+            "openai": setup_openai(),
+            "perplexity": setup_perplexity(),
+            "textract_client": setup_textract(),
         }
 
         if uploaded_file:
@@ -848,14 +818,12 @@ def render_upload_module():
 
                     df = build_batch_summary(results)
                     st.dataframe(df, use_container_width=True, hide_index=True)
-
-                    excel_data = build_excel_export(results)
                     st.download_button(
-                        label="📥 Download Excel with Separate Bills + Summary",
-                        data=excel_data,
+                        "📥 Download Excel with Separate Bills + Summary",
+                        data=build_excel_export(results),
                         file_name="bills_separate_summary.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
+                        use_container_width=True,
                     )
             else:
                 image = Image.open(BytesIO(file_bytes)).convert("RGB")
@@ -863,21 +831,12 @@ def render_upload_module():
                 if st.button("Process Image", use_container_width=True):
                     data = analyze_with_auto_fallback(model_bundle, image, forced=st.session_state.get("selected_provider"))
                     render_bill_result(data, uploaded_file.name, save_to_db=True, upload_drive=True)
-
-                    single_results = [{
-                        "page": 1,
-                        "source": uploaded_file.name,
-                        "data": data,
-                        "error": None
-                    }]
-
-                    excel_data = build_excel_export(single_results)
                     st.download_button(
-                        label="📥 Download Excel with Summary",
-                        data=excel_data,
+                        "📥 Download Excel with Summary",
+                        data=build_excel_export([{"page": 1, "source": uploaded_file.name, "data": data, "error": None}]),
                         file_name="single_bill_summary.xlsx",
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True
+                        use_container_width=True,
                     )
 
     with tabs[1]:
