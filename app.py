@@ -591,7 +591,7 @@ def build_excel_export(results):
             base_name = sanitize_sheet_name(f"{idx}_{shop}")
             tmp_df.to_excel(writer, sheet_name=base_name, index=False)
 
-            meta_df = pd.DataFrame([{
+            pd.DataFrame([{
                 "page": item.get("page"),
                 "source": item.get("source"),
                 "shop_name": shop,
@@ -601,8 +601,7 @@ def build_excel_export(results):
                 "calculated_total": calculated_total,
                 "difference": abs(calculated_total - bill_total),
                 "status": status
-            }])
-            meta_df.to_excel(writer, sheet_name=sanitize_sheet_name(f"{base_name}_meta"), index=False)
+            }]).to_excel(writer, sheet_name=sanitize_sheet_name(f"{base_name}_meta"), index=False)
 
             if raw_text:
                 pd.DataFrame({"raw_text": [raw_text]}).to_excel(writer, sheet_name=sanitize_sheet_name(f"{base_name}_text"), index=False)
@@ -786,7 +785,12 @@ def render_upload_module():
     with tabs[0]:
         providers = ["Google Vision OCR", "Google Document AI", "AWS Textract", "Gemini", "OpenAI", "Perplexity"]
         st.session_state.selected_provider = st.selectbox("Select OCR Provider", providers, index=providers.index("Gemini"), key="provider_selectbox")
-        uploaded_file = st.file_uploader("Upload Bill Image or PDF", type=["jpg", "jpeg", "png", "pdf"])
+
+        uploaded_files = st.file_uploader(
+            "Upload Bill Images or PDFs",
+            type=["jpg", "jpeg", "png", "pdf"],
+            accept_multiple_files=True
+        )
 
         model_bundle = {
             "vision_client": setup_google_vision(),
@@ -798,46 +802,61 @@ def render_upload_module():
             "textract_client": setup_textract(),
         }
 
-        if uploaded_file:
-            file_bytes = uploaded_file.read()
-            if uploaded_file.name.lower().endswith(".pdf"):
-                if st.button("Process PDF", use_container_width=True):
-                    try:
-                        pages = convert_pdf_to_images(file_bytes)
-                    except Exception as e:
-                        st.error(f"PDF convert nahi ho paaya: {e}")
-                        pages = []
+        if uploaded_files:
+            all_results = []
 
-                    results = []
-                    for idx, page_img in enumerate(pages, start=1):
+            for uploaded_file in uploaded_files:
+                file_bytes = uploaded_file.read()
+                name_lower = uploaded_file.name.lower()
+
+                if name_lower.endswith(".pdf"):
+                    if st.button(f"Process PDF: {uploaded_file.name}", use_container_width=True, key=f"pdf_btn_{uploaded_file.name}"):
                         try:
-                            data = analyze_with_auto_fallback(model_bundle, page_img, forced=st.session_state.get("selected_provider"))
-                            results.append({"page": idx, "source": uploaded_file.name, "data": data, "error": None})
+                            pages = convert_pdf_to_images(file_bytes)
                         except Exception as e:
-                            results.append({"page": idx, "source": uploaded_file.name, "data": None, "error": str(e)})
+                            st.error(f"{uploaded_file.name} PDF convert nahi ho paaya: {e}")
+                            pages = []
 
-                    df = build_batch_summary(results)
-                    st.dataframe(df, use_container_width=True, hide_index=True)
-                    st.download_button(
-                        "📥 Download Excel with Separate Bills + Summary",
-                        data=build_excel_export(results),
-                        file_name="bills_separate_summary.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                    )
-            else:
-                image = Image.open(BytesIO(file_bytes)).convert("RGB")
-                st.image(image, caption="Uploaded Bill", use_container_width=True)
-                if st.button("Process Image", use_container_width=True):
-                    data = analyze_with_auto_fallback(model_bundle, image, forced=st.session_state.get("selected_provider"))
-                    render_bill_result(data, uploaded_file.name, save_to_db=True, upload_drive=True)
-                    st.download_button(
-                        "📥 Download Excel with Summary",
-                        data=build_excel_export([{"page": 1, "source": uploaded_file.name, "data": data, "error": None}]),
-                        file_name="single_bill_summary.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                    )
+                        for idx, page_img in enumerate(pages, start=1):
+                            try:
+                                data = analyze_with_auto_fallback(
+                                    model_bundle,
+                                    page_img,
+                                    forced=st.session_state.get("selected_provider")
+                                )
+                                all_results.append({"page": idx, "source": uploaded_file.name, "data": data, "error": None})
+                            except Exception as e:
+                                all_results.append({"page": idx, "source": uploaded_file.name, "data": None, "error": str(e)})
+
+                else:
+                    image = Image.open(BytesIO(file_bytes)).convert("RGB")
+                    st.image(image, caption=f"Uploaded Bill: {uploaded_file.name}", use_container_width=True)
+
+                    if st.button(f"Process Image: {uploaded_file.name}", use_container_width=True, key=f"img_btn_{uploaded_file.name}"):
+                        try:
+                            data = analyze_with_auto_fallback(
+                                model_bundle,
+                                image,
+                                forced=st.session_state.get("selected_provider")
+                            )
+                            render_bill_result(data, uploaded_file.name, save_to_db=True, upload_drive=True)
+                            all_results.append({"page": 1, "source": uploaded_file.name, "data": data, "error": None})
+                        except Exception as e:
+                            st.error(f"{uploaded_file.name} process nahi ho paaya: {e}")
+                            all_results.append({"page": 1, "source": uploaded_file.name, "data": None, "error": str(e)})
+
+            if all_results:
+                summary_df = build_batch_summary(all_results)
+                st.subheader("Combined Summary")
+                st.dataframe(summary_df, use_container_width=True, hide_index=True)
+
+                st.download_button(
+                    "📥 Download Combined Excel with Separate Bills + Summary",
+                    data=build_excel_export(all_results),
+                    file_name="combined_bills_summary.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                )
 
     with tabs[1]:
         st.subheader("History")
