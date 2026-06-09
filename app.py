@@ -118,6 +118,7 @@ def init_runtime_state():
         "vision_enabled": True,
         "textract_enabled": True,
         "theme_mode": "light",
+        "processed_files": set(),
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -789,8 +790,19 @@ def render_upload_module():
         uploaded_files = st.file_uploader(
             "Upload Bill Images or PDFs",
             type=["jpg", "jpeg", "png", "pdf"],
-            accept_multiple_files=True
+            accept_multiple_files=True,
+            key="bill_uploader",
         )
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            process_now = st.button("Process All Files", use_container_width=True)
+        with col_b:
+            clear_state = st.button("Clear Uploaded / Processed Files", use_container_width=True)
+
+        if clear_state:
+            st.session_state.processed_files = set()
+            st.rerun()
 
         model_bundle = {
             "vision_client": setup_google_vision(),
@@ -802,48 +814,42 @@ def render_upload_module():
             "textract_client": setup_textract(),
         }
 
-        if uploaded_files:
+        if uploaded_files and process_now:
             all_results = []
 
             for uploaded_file in uploaded_files:
-                file_bytes = uploaded_file.read()
+                file_key = f"{uploaded_file.name}_{uploaded_file.size}"
+                if file_key in st.session_state.processed_files:
+                    continue
+
+                file_bytes = uploaded_file.getvalue()
                 name_lower = uploaded_file.name.lower()
 
                 if name_lower.endswith(".pdf"):
-                    if st.button(f"Process PDF: {uploaded_file.name}", use_container_width=True, key=f"pdf_btn_{uploaded_file.name}"):
-                        try:
-                            pages = convert_pdf_to_images(file_bytes)
-                        except Exception as e:
-                            st.error(f"{uploaded_file.name} PDF convert nahi ho paaya: {e}")
-                            pages = []
-
-                        for idx, page_img in enumerate(pages, start=1):
-                            try:
-                                data = analyze_with_auto_fallback(
-                                    model_bundle,
-                                    page_img,
-                                    forced=st.session_state.get("selected_provider")
-                                )
-                                all_results.append({"page": idx, "source": uploaded_file.name, "data": data, "error": None})
-                            except Exception as e:
-                                all_results.append({"page": idx, "source": uploaded_file.name, "data": None, "error": str(e)})
-
+                    try:
+                        pages = convert_pdf_to_images(file_bytes)
+                    except Exception as e:
+                        st.error(f"{uploaded_file.name} PDF convert nahi ho paaya: {e}")
+                        pages = []
                 else:
-                    image = Image.open(BytesIO(file_bytes)).convert("RGB")
-                    st.image(image, caption=f"Uploaded Bill: {uploaded_file.name}", use_container_width=True)
+                    try:
+                        pages = [Image.open(BytesIO(file_bytes)).convert("RGB")]
+                    except Exception as e:
+                        st.error(f"{uploaded_file.name} image open nahi ho paayi: {e}")
+                        pages = []
 
-                    if st.button(f"Process Image: {uploaded_file.name}", use_container_width=True, key=f"img_btn_{uploaded_file.name}"):
-                        try:
-                            data = analyze_with_auto_fallback(
-                                model_bundle,
-                                image,
-                                forced=st.session_state.get("selected_provider")
-                            )
-                            render_bill_result(data, uploaded_file.name, save_to_db=True, upload_drive=True)
-                            all_results.append({"page": 1, "source": uploaded_file.name, "data": data, "error": None})
-                        except Exception as e:
-                            st.error(f"{uploaded_file.name} process nahi ho paaya: {e}")
-                            all_results.append({"page": 1, "source": uploaded_file.name, "data": None, "error": str(e)})
+                for idx, page_img in enumerate(pages, start=1):
+                    try:
+                        data = analyze_with_auto_fallback(
+                            model_bundle,
+                            page_img,
+                            forced=st.session_state.get("selected_provider")
+                        )
+                        all_results.append({"page": idx, "source": uploaded_file.name, "data": data, "error": None})
+                    except Exception as e:
+                        all_results.append({"page": idx, "source": uploaded_file.name, "data": None, "error": str(e)})
+
+                st.session_state.processed_files.add(file_key)
 
             if all_results:
                 summary_df = build_batch_summary(all_results)
@@ -857,6 +863,9 @@ def render_upload_module():
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
                 )
+
+        elif uploaded_files and not process_now:
+            st.info("Files uploaded hain. Process All Files button dabao.")
 
     with tabs[1]:
         st.subheader("History")
