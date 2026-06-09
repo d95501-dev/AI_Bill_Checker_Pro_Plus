@@ -358,6 +358,19 @@ def image_to_bytes(image):
     return buf.getvalue()
 
 
+def preprocess_for_ocr(image):
+    try:
+        import cv2
+        import numpy as np
+        img = np.array(image)
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 11)
+        return Image.fromarray(thresh)
+    except Exception:
+        return image
+
+
 def convert_pdf_to_images(file_bytes):
     if fitz is not None:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
@@ -409,7 +422,8 @@ def heuristic_parse_from_text(text):
 
     lines = [x.strip() for x in text.splitlines() if x.strip()]
     shop_name = None
-    for ln in lines[:10]:
+
+    for ln in lines[:12]:
         if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
             shop_name = ln[:80]
             break
@@ -418,26 +432,45 @@ def heuristic_parse_from_text(text):
     bill_date = None
     total = None
 
-    m = re.search(r"\bGSTIN[:\s]*([0-9A-Z]{15})\b", text, re.I)
-    if m:
-        gst_number = m.group(1)
+    gst_patterns = [
+        r"\bGSTIN[:\s-]*([0-9A-Z]{15})\b",
+        r"\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z])\b"
+    ]
+    for p in gst_patterns:
+        m = re.search(p, text, re.I)
+        if m:
+            gst_number = m.group(1)
+            break
 
-    for p in [r"\b(\d{2}[/-]\d{2}[/-]\d{2,4})\b", r"\b(\d{4}[/-]\d{2}[/-]\d{2})\b"]:
+    date_patterns = [
+        r"\b(\d{2}[/-]\d{2}[/-]\d{2,4})\b",
+        r"\b(\d{4}[/-]\d{2}[/-]\d{2})\b",
+        r"\b(\d{2}\s+[A-Za-z]{3,9}\s+\d{2,4})\b"
+    ]
+    for p in date_patterns:
         m = re.search(p, text)
         if m:
             bill_date = m.group(1)
             break
 
-    for p in [
+    total_patterns = [
         r"\bGrand Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
         r"\bNet Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
         r"\bTotal[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
         r"\bAmount[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
-    ]:
+        r"\bBill Amount[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
+    ]
+    for p in total_patterns:
         m = re.search(p, text, re.I)
         if m:
             total = m.group(1)
             break
+
+    if not shop_name:
+        for ln in lines:
+            if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax|phone|mobile|email)\b", ln, re.I):
+                shop_name = ln[:80]
+                break
 
     return {
         "shop_name": shop_name,
@@ -467,6 +500,8 @@ def try_gemini(model, image):
 
 
 def analyze_with_auto_fallback(model_bundle, image, forced=None):
+    image = preprocess_for_ocr(image)
+
     order = ["Gemini", "Google Vision OCR", "Google Document AI", "AWS Textract", "OpenAI", "Perplexity"]
     if forced in order:
         order = [forced] + [x for x in order if x != forced]
@@ -481,7 +516,14 @@ def analyze_with_auto_fallback(model_bundle, image, forced=None):
             elif provider == "Google Vision OCR" and model_bundle.get("vision_client") and st.session_state.get("vision_enabled", True):
                 text = extract_vision_text(model_bundle["vision_client"], image)
                 if text:
-                    return heuristic_parse_from_text(text)
+                    parsed = heuristic_parse_from_text(text)
+                    if not parsed.get("shop_name"):
+                        parsed["shop_name"] = next(
+                            (x[:80] for x in [ln.strip() for ln in text.splitlines() if ln.strip()]
+                             if len(x) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", x, re.I)),
+                            None
+                        )
+                    return parsed
 
             elif provider == "Google Document AI" and model_bundle.get("docai_client") and model_bundle.get("docai_name") and st.session_state.get("docai_enabled", True):
                 raw_document = documentai.RawDocument(content=image_to_bytes(image), mime_type="image/jpeg")
