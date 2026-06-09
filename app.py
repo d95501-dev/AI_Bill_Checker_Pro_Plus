@@ -41,11 +41,6 @@ except Exception:
     vision = None
 
 try:
-    from google.cloud import documentai
-except Exception:
-    documentai = None
-
-try:
     import boto3
 except Exception:
     boto3 = None
@@ -110,15 +105,11 @@ def init_auth():
 def init_runtime_state():
     defaults = {
         "selected_provider": "Gemini",
+        "theme_mode": "light",
+        "processed_files": set(),
         "gemini_available": True,
         "last_gemini_error_time": None,
         "gemini_cooldown_seconds": 900,
-        "perplexity_enabled": True,
-        "docai_enabled": True,
-        "vision_enabled": True,
-        "textract_enabled": True,
-        "theme_mode": "light",
-        "processed_files": set(),
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -207,7 +198,7 @@ def setup_gemini():
     if genai is None:
         return None
     api_key = secret_or_default("GEMINI_API_KEY", "").strip()
-    if not api_key or "your_" in api_key.lower():
+    if not api_key:
         return None
     genai.configure(api_key=api_key)
     return genai.GenerativeModel("gemini-2.5-flash")
@@ -216,49 +207,14 @@ def setup_gemini():
 @st.cache_resource
 def setup_openai():
     api_key = secret_or_default("OPENAI_API_KEY", "").strip()
-    if not api_key or OpenAI is None or "your_" in api_key.lower():
+    if not api_key or OpenAI is None:
         return None
     return OpenAI(api_key=api_key)
 
 
 @st.cache_resource
-def setup_perplexity():
-    api_key = secret_or_default("PERPLEXITY_API_KEY", "").strip()
-    if not api_key or OpenAI is None or "your_" in api_key.lower():
-        return None
-    return OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
-
-
-@st.cache_resource
 def setup_google_vision():
     return vision.ImageAnnotatorClient() if vision is not None else None
-
-
-@st.cache_resource
-def setup_textract():
-    if boto3 is None:
-        return None
-    if not secret_or_default("AWS_ACCESS_KEY_ID", "") or not secret_or_default("AWS_SECRET_ACCESS_KEY", ""):
-        return None
-    return boto3.client(
-        "textract",
-        region_name=secret_or_default("AWS_REGION", "ap-south-1"),
-        aws_access_key_id=secret_or_default("AWS_ACCESS_KEY_ID"),
-        aws_secret_access_key=secret_or_default("AWS_SECRET_ACCESS_KEY"),
-    )
-
-
-@st.cache_resource
-def setup_docai():
-    if documentai is None:
-        return None, None
-    project_id = secret_or_default("GCP_PROJECT_ID", "").strip()
-    location = secret_or_default("DOC_AI_LOCATION", "us").strip()
-    processor_id = secret_or_default("DOC_AI_PROCESSOR_ID", "").strip()
-    if not project_id or not processor_id:
-        return None, None
-    client = documentai.DocumentProcessorServiceClient()
-    return client, client.processor_path(project_id, location, processor_id)
 
 
 def get_drive_service():
@@ -502,7 +458,7 @@ def try_gemini(model, image):
 def analyze_with_auto_fallback(model_bundle, image, forced=None):
     image = preprocess_for_ocr(image)
 
-    order = ["Gemini", "Google Vision OCR", "Google Document AI", "AWS Textract", "OpenAI", "Perplexity"]
+    order = ["Gemini", "Google Vision OCR", "OpenAI"]
     if forced in order:
         order = [forced] + [x for x in order if x != forced]
 
@@ -513,7 +469,7 @@ def analyze_with_auto_fallback(model_bundle, image, forced=None):
                 if data:
                     return data
 
-            elif provider == "Google Vision OCR" and model_bundle.get("vision_client") and st.session_state.get("vision_enabled", True):
+            elif provider == "Google Vision OCR" and model_bundle.get("vision_client"):
                 text = extract_vision_text(model_bundle["vision_client"], image)
                 if text:
                     parsed = heuristic_parse_from_text(text)
@@ -524,24 +480,6 @@ def analyze_with_auto_fallback(model_bundle, image, forced=None):
                             None
                         )
                     return parsed
-
-            elif provider == "Google Document AI" and model_bundle.get("docai_client") and model_bundle.get("docai_name") and st.session_state.get("docai_enabled", True):
-                raw_document = documentai.RawDocument(content=image_to_bytes(image), mime_type="image/jpeg")
-                request = documentai.ProcessRequest(name=model_bundle["docai_name"], raw_document=raw_document)
-                result = model_bundle["docai_client"].process_document(request=request)
-                text = getattr(result.document, "text", "") or ""
-                if text:
-                    return heuristic_parse_from_text(text)
-
-            elif provider == "AWS Textract" and model_bundle.get("textract_client") and st.session_state.get("textract_enabled", True):
-                resp = model_bundle["textract_client"].analyze_expense(Document={"Bytes": image_to_bytes(image)})
-                text_parts = []
-                for d in resp.get("ExpenseDocuments", []):
-                    for sf in d.get("SummaryFields", []):
-                        text_parts.append(f"{sf.get('Type', {}).get('Text', '')}: {sf.get('ValueDetection', {}).get('Text', '')}")
-                text = "\n".join(text_parts)
-                if text:
-                    return heuristic_parse_from_text(text)
 
             elif provider == "OpenAI" and model_bundle.get("openai"):
                 b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
@@ -555,21 +493,6 @@ def analyze_with_auto_fallback(model_bundle, image, forced=None):
                         ]},
                     ],
                     response_format={"type": "json_object"},
-                )
-                return parse_json_from_response(resp.choices[0].message.content)
-
-            elif provider == "Perplexity" and model_bundle.get("perplexity") and st.session_state.get("perplexity_enabled", True):
-                b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
-                resp = model_bundle["perplexity"].chat.completions.create(
-                    model=secret_or_default("PERPLEXITY_MODEL", "sonar-pro"),
-                    messages=[
-                        {"role": "system", "content": build_schema_prompt()},
-                        {"role": "user", "content": [
-                            {"type": "text", "text": "Extract invoice JSON from this image."},
-                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
-                        ]},
-                    ],
-                    temperature=0.0,
                 )
                 return parse_json_from_response(resp.choices[0].message.content)
         except Exception:
@@ -668,88 +591,6 @@ def build_excel_export(results):
     return buffer.getvalue()
 
 
-def render_bill_result(data, source_name, save_to_db=False, upload_drive=True):
-    raw_text = str(data.get("raw_text") or "").strip() if isinstance(data, dict) else ""
-    items = normalize_items(data.get("items") if isinstance(data, dict) else [])
-    df = pd.DataFrame(items) if items else pd.DataFrame(columns=["name", "qty", "rate", "amount"])
-
-    shop_name = str(data.get("shop_name") or "").strip() if isinstance(data, dict) else ""
-    bill_date = str(data.get("bill_date") or "").strip() if isinstance(data, dict) else ""
-    gst_number = data.get("gst_number") if isinstance(data, dict) else None
-    gst_number = gst_number or "N/A"
-
-    if not shop_name and raw_text:
-        for ln in [x.strip() for x in raw_text.splitlines() if x.strip()][:10]:
-            if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
-                shop_name = ln[:80]
-                break
-    if not shop_name:
-        shop_name = "Unknown Shop"
-    if not bill_date:
-        bill_date = datetime.now().strftime("%Y-%m-%d")
-
-    if not df.empty:
-        st.dataframe(df, use_container_width=True, hide_index=True)
-        df["amount"] = pd.to_numeric(df["amount"], errors="coerce").fillna(0)
-        calculated_total = float(df["amount"].sum())
-    else:
-        calculated_total = 0.0
-        st.info("No items detected.")
-
-    bill_total = safe_float(data.get("total", 0) if isinstance(data, dict) else 0)
-    has_meaningful_data = bool(raw_text) or not df.empty or bill_total > 0 or shop_name != "Unknown Shop"
-    status = "Needs Review"
-    if has_meaningful_data and bill_total > 0 and abs(calculated_total - bill_total) < 1:
-        status = "Matched"
-    elif has_meaningful_data and bill_total > 0:
-        status = "Mismatch"
-
-    st.markdown(f"### 🏪 Vendor: `{shop_name}`")
-    c1, c2 = st.columns(2)
-    c1.markdown(f"**🗓️ Declared Invoice Date:** {bill_date}")
-    is_valid_gst, formatted_gst = validate_gst(gst_number)
-    if gst_number != "N/A":
-        c2.markdown(f"**🛡️ GSTIN Registry Validation:** {'✅ Valid - ' + formatted_gst if is_valid_gst else '⚠️ Format Mismatch - ' + formatted_gst}")
-    else:
-        c2.markdown("**🛡️ GSTIN Registry Validation:** ℹ️ Not Disclosed")
-
-    st.metric("Summation of Extracted Items", f"₹{calculated_total:,.2f}")
-    st.metric("Declared Invoice Total", f"₹{bill_total:,.2f}")
-    diff = abs(calculated_total - bill_total)
-    st.success("🎯 Auto-Arithmetic Audit Pass." if diff < 1 else f"🛑 Audit Discrepancy Found: ₹{diff:,.2f}")
-    st.info(f"Status: {status}")
-
-    if raw_text:
-        with st.expander("View extracted raw text"):
-            st.text(raw_text[:20000])
-
-    if save_to_db:
-        insert_bill(shop_name, bill_date, gst_number, bill_total, calculated_total, status)
-
-    if upload_drive:
-        try:
-            out_json = os.path.join(OUTPUT_DIR, f"bill_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json")
-            payload = {
-                "shop_name": shop_name,
-                "bill_date": bill_date,
-                "gst_number": gst_number,
-                "items": items,
-                "total": bill_total,
-                "calculated_total": calculated_total,
-                "status": status,
-                "source": source_name,
-                "timestamp": datetime.now().isoformat(),
-                "raw_text": raw_text,
-            }
-            with open(out_json, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
-            uploaded = upload_to_drive(out_json, drive_name=os.path.basename(out_json), mime_type="application/json")
-            if uploaded:
-                st.success(f"Google Drive upload done: {uploaded.get('name', 'file')}")
-        except Exception as e:
-            st.warning(f"Drive upload skipped: {e}")
-
-
 def build_batch_summary(results):
     rows = []
     for item in results:
@@ -799,13 +640,7 @@ def build_batch_summary(results):
 
 
 def render_theme_toggle(location="main"):
-    mode = st.radio(
-        "Theme",
-        ["light", "dark"],
-        horizontal=True,
-        index=0 if st.session_state.get("theme_mode", "light") == "light" else 1,
-        key=f"theme_radio_{location}",
-    )
+    mode = st.radio("Theme", ["light", "dark"], horizontal=True, index=0 if st.session_state.get("theme_mode", "light") == "light" else 1, key=f"theme_radio_{location}")
     if mode != st.session_state.get("theme_mode", "light"):
         st.session_state["theme_mode"] = mode
         st.rerun()
@@ -826,7 +661,7 @@ def render_upload_module():
     tabs = st.tabs(["📷 Scan / Upload", "🕘 History", "⚙️ Settings"])
 
     with tabs[0]:
-        providers = ["Google Vision OCR", "Google Document AI", "AWS Textract", "Gemini", "OpenAI", "Perplexity"]
+        providers = ["Gemini", "Google Vision OCR", "OpenAI"]
         st.session_state.selected_provider = st.selectbox("Select OCR Provider", providers, index=providers.index("Gemini"), key="provider_selectbox")
 
         uploaded_files = st.file_uploader(
@@ -848,12 +683,8 @@ def render_upload_module():
 
         model_bundle = {
             "vision_client": setup_google_vision(),
-            "docai_client": setup_docai()[0],
-            "docai_name": setup_docai()[1],
             "gemini": setup_gemini(),
             "openai": setup_openai(),
-            "perplexity": setup_perplexity(),
-            "textract_client": setup_textract(),
         }
 
         if uploaded_files and process_now:
@@ -921,7 +752,7 @@ def render_upload_module():
     with tabs[2]:
         st.subheader("Settings")
         st.caption("Theme control is available in the sidebar.")
-        st.caption("Provider order is sequential and fail-fast for speed.")
+        st.caption("Provider order: Gemini -> Google Vision OCR -> OpenAI.")
 
 
 def main():
