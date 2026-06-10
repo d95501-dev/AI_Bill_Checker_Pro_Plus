@@ -67,21 +67,17 @@ DB_PATH = "bills.db"
 OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-
 def secret_or_default(key, default=""):
     try:
         return st.secrets[key]
     except Exception:
         return default
 
-
 DEFAULT_USERNAME = secret_or_default("APP_USERNAME", "admin")
 DEFAULT_PASSWORD = secret_or_default("APP_PASSWORD", "password123")
 
-
 def setup_page():
     st.set_page_config(page_title=APP_TITLE, page_icon="🧾", layout="wide", initial_sidebar_state="expanded")
-
 
 def init_db():
     with sqlite3.connect(DB_PATH, timeout=30) as conn:
@@ -101,11 +97,9 @@ def init_db():
             """
         )
 
-
 def init_auth():
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
-
 
 def init_runtime_state():
     defaults = {
@@ -120,7 +114,6 @@ def init_runtime_state():
         if k not in st.session_state:
             st.session_state[k] = v
 
-
 def do_login():
     st.title("🔐 System Login Proxy")
     username = st.text_input("Username")
@@ -133,14 +126,12 @@ def do_login():
             st.error("Invalid Username or Password Credentials")
     st.stop()
 
-
 def terminate_session():
     st.session_state.logged_in = False
     for k in list(st.session_state.keys()):
         if k != "logged_in":
             del st.session_state[k]
     st.rerun()
-
 
 def apply_theme_css():
     theme_mode = st.session_state.get("theme_mode", "light")
@@ -161,7 +152,6 @@ def apply_theme_css():
             section[data-testid="stSidebar"] * { color: #f8fafc !important; }
             </style>
         """, unsafe_allow_html=True)
-
 
 def apply_css():
     st.markdown("""
@@ -197,7 +187,6 @@ def apply_css():
         </style>
     """, unsafe_allow_html=True)
 
-
 @st.cache_resource
 def setup_gemini():
     if genai is None:
@@ -208,14 +197,12 @@ def setup_gemini():
     genai.configure(api_key=api_key)
     return genai.GenerativeModel("gemini-2.5-flash")
 
-
 @st.cache_resource
 def setup_openai():
     api_key = secret_or_default("OPENAI_API_KEY", "").strip()
     if not api_key or OpenAI is None:
         return None
     return OpenAI(api_key=api_key)
-
 
 @st.cache_resource
 def setup_perplexity():
@@ -224,11 +211,9 @@ def setup_perplexity():
         return None
     return OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
 
-
 @st.cache_resource
 def setup_google_vision():
     return vision.ImageAnnotatorClient() if vision is not None else None
-
 
 def get_drive_service():
     service_account_file = secret_or_default("GOOGLE_SERVICE_ACCOUNT_FILE", "service_account.json")
@@ -238,7 +223,6 @@ def get_drive_service():
         service_account_file, scopes=["https://www.googleapis.com/auth/drive"]
     )
     return build("drive", "v3", credentials=creds)
-
 
 def upload_to_drive(local_path, drive_name=None, mime_type="application/octet-stream"):
     folder_id = secret_or_default("DRIVE_FOLDER_ID", "").strip()
@@ -251,14 +235,12 @@ def upload_to_drive(local_path, drive_name=None, mime_type="application/octet-st
     media = MediaFileUpload(local_path, mimetype=mime_type, resumable=True)
     return service.files().create(body=metadata, media_body=media, fields="id, name, webViewLink").execute()
 
-
 def validate_gst(gst_str):
     if not gst_str:
         return False, "N/A"
     gst_regex = r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$"
     clean_gst = re.sub(r"[^A-Z0-9]", "", str(gst_str).upper())
     return bool(re.match(gst_regex, clean_gst)), clean_gst
-
 
 def normalize_items(items):
     if not isinstance(items, list):
@@ -274,7 +256,6 @@ def normalize_items(items):
             })
     return cleaned
 
-
 def parse_json_from_response(response_text):
     raw = (response_text or "").strip().replace("```json", "").replace("```", "").strip()
     m = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -282,13 +263,11 @@ def parse_json_from_response(response_text):
         raw = m.group(0)
     return json.loads(raw)
 
-
 def safe_float(value):
     try:
         return float(str(value).replace(",", "").strip())
     except Exception:
         return 0.0
-
 
 def can_try_gemini():
     if st.session_state.get("gemini_available", True):
@@ -296,11 +275,9 @@ def can_try_gemini():
     last_error = st.session_state.get("last_gemini_error_time")
     return (not last_error) or ((datetime.now() - last_error).total_seconds() >= st.session_state.get("gemini_cooldown_seconds", 900))
 
-
 def is_gemini_quota_error(err):
     msg = str(err).lower()
     return ("429" in msg) or ("quota" in msg) or ("resource_exhausted" in msg) or ("rate limit" in msg)
-
 
 def build_schema_prompt():
     return """
@@ -320,12 +297,10 @@ Rules:
 - No explanation.
 """
 
-
 def image_to_bytes(image):
     buf = BytesIO()
     image.save(buf, format="JPEG", quality=95)
     return buf.getvalue()
-
 
 def preprocess_for_ocr(image):
     try:
@@ -338,7 +313,6 @@ def preprocess_for_ocr(image):
         return Image.fromarray(thresh)
     except Exception:
         return image
-
 
 def convert_pdf_to_images(file_bytes):
     if fitz is not None:
@@ -359,7 +333,6 @@ def convert_pdf_to_images(file_bytes):
         return convert_from_bytes(file_bytes, dpi=200)
     raise RuntimeError("No PDF rendering library available.")
 
-
 def extract_vision_text(vision_client, image):
     img = vision.Image(content=image_to_bytes(image))
     resp = vision_client.document_text_detection(image=img)
@@ -372,7 +345,6 @@ def extract_vision_text(vision_client, image):
             text = anns[0].description.strip()
     return text.strip()
 
-
 def heuristic_extract_items(text):
     items = []
     for ln in [x.strip() for x in (text or "").splitlines() if x.strip()]:
@@ -382,7 +354,6 @@ def heuristic_extract_items(text):
         if m:
             items.append({"name": m.group(1).strip(), "qty": m.group(2), "rate": m.group(3), "amount": m.group(4)})
     return items[:30]
-
 
 def heuristic_parse_from_text(text):
     text = (text or "").strip()
@@ -449,7 +420,6 @@ def heuristic_parse_from_text(text):
         "raw_text": text,
     }
 
-
 def normalize_result(data, fallback_text=""):
     if not isinstance(data, dict):
         data = {}
@@ -486,7 +456,6 @@ def normalize_result(data, fallback_text=""):
     data["raw_text"] = raw_text
     return data
 
-
 def try_gemini(model, image):
     try:
         resp = model.generate_content(
@@ -503,7 +472,6 @@ def try_gemini(model, image):
             st.session_state.last_gemini_error_time = datetime.now()
         return None, e
 
-
 def try_perplexity(client, image):
     b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
     resp = client.chat.completions.create(
@@ -519,7 +487,6 @@ def try_perplexity(client, image):
     )
     return normalize_result(parse_json_from_response(resp.choices[0].message.content))
 
-
 def try_openai(client, image):
     b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
     resp = client.chat.completions.create(
@@ -534,7 +501,6 @@ def try_openai(client, image):
         response_format={"type": "json_object"},
     )
     return normalize_result(parse_json_from_response(resp.choices[0].message.content))
-
 
 def analyze_with_auto_fallback(model_bundle, image, forced=None):
     image = preprocess_for_ocr(image)
@@ -564,7 +530,6 @@ def analyze_with_auto_fallback(model_bundle, image, forced=None):
 
     return normalize_result(heuristic_parse_from_text(""), "")
 
-
 def insert_bill(shop, date, gst, total, calc_total, status):
     with sqlite3.connect(DB_PATH, timeout=30) as conn:
         conn.execute(
@@ -577,12 +542,10 @@ def insert_bill(shop, date, gst, total, calc_total, status):
         )
         conn.commit()
 
-
 def sanitize_sheet_name(name, fallback="Sheet"):
     name = re.sub(r"[\[\]\*\?/\\:]", "_", str(name)).strip()
     name = re.sub(r"\s+", " ", name)
     return (name[:31] or fallback)
-
 
 # PREMIUM EXCEL GENERATOR (DYNAMIC FORMULAS & CLASSIC NAVY THEME)
 def build_excel_export(results):
@@ -744,7 +707,6 @@ def build_excel_export(results):
     buffer.seek(0)
     return buffer.getvalue()
 
-
 def build_batch_summary(results):
     rows = []
     for item in results:
@@ -792,13 +754,11 @@ def build_batch_summary(results):
             })
     return pd.DataFrame(rows)
 
-
 def render_theme_toggle(location="main"):
     mode = st.radio("Theme", ["light", "dark"], horizontal=True, index=0 if st.session_state.get("theme_mode", "light") == "light" else 1, key=f"theme_radio_{location}")
     if mode != st.session_state.get("theme_mode", "light"):
         st.session_state["theme_mode"] = mode
         st.rerun()
-
 
 def render_upload_module():
     st.markdown("""
@@ -844,7 +804,6 @@ def render_upload_module():
 
         if uploaded_files and process_now:
             all_results = []
-
             for uploaded_file in uploaded_files:
                 file_key = f"{uploaded_file.name}_{uploaded_file.size}"
                 if file_key in st.session_state.processed_files:
@@ -856,59 +815,32 @@ def render_upload_module():
                 if name_lower.endswith(".pdf"):
                     try:
                         pages = convert_pdf_to_images(file_bytes)
+                        for i, img in enumerate(pages):
+                            data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
+                            all_results.append({"page": i+1, "source": uploaded_file.name, "data": data})
                     except Exception as e:
-                        st.error(f"{uploaded_file.name} PDF convert nahi ho paaya: {e}")
-                        pages = []
+                        st.error(f"Error processing {uploaded_file.name}: {e}")
                 else:
-                    try:
-                        pages = [Image.open(BytesIO(file_bytes)).convert("RGB")]
-                    except Exception as e:
-                        st.error(f"{uploaded_file.name} image open nahi ho paayi: {e}")
-                        pages = []
-
-                for idx, page_img in enumerate(pages, start=1):
-                    try:
-                        data = analyze_with_auto_fallback(
-                            model_bundle,
-                            page_img,
-                            forced=st.session_state.get("selected_provider")
-                        )
-                        all_results.append({"page": idx, "source": uploaded_file.name, "data": data, "error": None})
-                    except Exception as e:
-                        all_results.append({"page": idx, "source": uploaded_file.name, "data": None, "error": str(e)})
-
+                    img = Image.open(BytesIO(file_bytes)).convert("RGB")
+                    data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
+                    all_results.append({"page": 1, "source": uploaded_file.name, "data": data})
+                
                 st.session_state.processed_files.add(file_key)
 
             if all_results:
-                summary_df = build_batch_summary(all_results)
-                st.subheader("Combined Summary")
-                st.dataframe(summary_df, use_container_width=True, hide_index=True)
-
-                st.download_button(
-                    "📥 Download Combined Excel with Separate Bills + Summary",
-                    data=build_excel_export(all_results),
-                    file_name="combined_bills_summary.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                )
-
-        elif uploaded_files and not process_now:
-            st.info("Files uploaded hain. Process All Files button dabao.")
-
+                df = build_batch_summary(all_results)
+                st.dataframe(df, use_container_width=True)
+                excel_data = build_excel_export(all_results)
+                st.download_button("📥 Download Excel Report", data=excel_data, file_name="Batch_Processing_Report.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    
     with tabs[1]:
-        st.subheader("History")
-        with sqlite3.connect(DB_PATH, timeout=30) as conn:
-            df = pd.read_sql_query(
-                "SELECT shop_name, bill_date, gst_number, total, calculated_total, status, timestamp FROM bills ORDER BY id DESC LIMIT 50",
-                conn
-            )
-        st.dataframe(df, use_container_width=True, hide_index=True)
+        st.subheader("Processing History")
+        with sqlite3.connect(DB_PATH) as conn:
+            history_df = pd.read_sql_query("SELECT * FROM bills ORDER BY timestamp DESC", conn)
+            st.dataframe(history_df, use_container_width=True)
 
     with tabs[2]:
-        st.subheader("Settings")
-        st.caption("Theme control is available in the sidebar.")
-        st.caption("Provider order: Gemini -> Google Vision OCR -> Perplexity -> OpenAI.")
-
+        render_theme_toggle("settings")
 
 def main():
     setup_page()
@@ -920,22 +852,10 @@ def main():
 
     if not st.session_state.logged_in:
         do_login()
-
-    with st.sidebar:
-        st.markdown("""
-            <div style="padding:12px;border:1px solid rgba(255,255,255,0.14);border-radius:14px;">
-                <div style="font-size:22px;font-weight:800;">Deep CSC</div>
-                <div style="font-size:16px;font-weight:700;margin-top:4px;">AI Bill Processor</div>
-                <div style="font-size:13px;opacity:0.95;margin-top:8px;">ID: 256423250015</div>
-                <div style="font-size:12px;opacity:0.9;margin-top:10px;">Provider-ready OCR and invoice processing dashboard.</div>
-            </div>
-        """, unsafe_allow_html=True)
-        render_theme_toggle("sidebar")
-        if st.button("Logout", use_container_width=True):
+    else:
+        render_upload_module()
+        if st.sidebar.button("Logout"):
             terminate_session()
-
-    render_upload_module()
-
 
 if __name__ == "__main__":
     main()
