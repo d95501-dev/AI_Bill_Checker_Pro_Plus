@@ -378,7 +378,6 @@ def heuristic_extract_items(text):
     for ln in [x.strip() for x in (text or "").splitlines() if x.strip()]:
         if re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
             continue
-
         parts = ln.split()
         if len(parts) >= 3:
             nums = [p for p in parts if re.fullmatch(r"\d+(?:\.\d+)?", p.replace(",", ""))]
@@ -389,7 +388,6 @@ def heuristic_extract_items(text):
                 name = " ".join(parts[:max(1, len(parts) - len(nums))]).strip()
                 if not name:
                     name = parts[0].strip()
-
                 items.append({
                     "name": name,
                     "qty": qty if qty not in [None, "", "0", 0] else "1",
@@ -397,7 +395,6 @@ def heuristic_extract_items(text):
                     "amount": amount
                 })
                 continue
-
         m = re.match(r"(.+?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$", ln)
         if m:
             q = m.group(2)
@@ -742,7 +739,7 @@ def build_excel_export(results):
         link_cell.font = Font(name="Calibri", size=11, color="0000FF", underline="single")
         link_cell.alignment = Alignment(horizontal="center")
 
-        for c in range(1, 11):
+        for c in range(1, 10 + 1):
             cell = ws_summary.cell(row=s_row, column=c)
             if not cell.font.color:
                 cell.font = font_regular
