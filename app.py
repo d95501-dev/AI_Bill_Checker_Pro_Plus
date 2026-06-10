@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 from PIL import Image
 
+# Openpyxl for premium excel rendering
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
@@ -265,10 +266,9 @@ def normalize_items(items):
     cleaned = []
     for it in items:
         if isinstance(it, dict):
-            qty = it.get("qty")
             cleaned.append({
-                "name": str(it.get("name") or "").strip(),
-                "qty": qty if qty not in [None, "", "0", 0] else "1",
+                "name": it.get("name") or "",
+                "qty": it.get("qty") or "",
                 "rate": it.get("rate") or "",
                 "amount": it.get("amount") or ""
             })
@@ -378,32 +378,9 @@ def heuristic_extract_items(text):
     for ln in [x.strip() for x in (text or "").splitlines() if x.strip()]:
         if re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
             continue
-        parts = ln.split()
-        if len(parts) >= 3:
-            nums = [p for p in parts if re.fullmatch(r"\d+(?:\.\d+)?", p.replace(",", ""))]
-            if len(nums) >= 2:
-                amount = nums[-1]
-                rate = nums[-2]
-                qty = nums[-3] if len(nums) >= 3 else "1"
-                name = " ".join(parts[:max(1, len(parts) - len(nums))]).strip()
-                if not name:
-                    name = parts[0].strip()
-                items.append({
-                    "name": name,
-                    "qty": qty if qty not in [None, "", "0", 0] else "1",
-                    "rate": rate,
-                    "amount": amount
-                })
-                continue
         m = re.match(r"(.+?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$", ln)
         if m:
-            q = m.group(2)
-            items.append({
-                "name": m.group(1).strip(),
-                "qty": q if q not in ["0", ""] else "1",
-                "rate": m.group(3),
-                "amount": m.group(4)
-            })
+            items.append({"name": m.group(1).strip(), "qty": m.group(2), "rate": m.group(3), "amount": m.group(4)})
     return items[:30]
 
 
@@ -482,28 +459,12 @@ def normalize_result(data, fallback_text=""):
         for k, v in parsed.items():
             if not data.get(k):
                 data[k] = v
-
-    items = normalize_items(data.get("items"))
-    fixed_items = []
-    for it in items:
-        q = str(it.get("qty") or "").strip()
-        if q in ["", "0", "0.0", "None", "null"]:
-            q = "1"
-        fixed_items.append({
-            "name": it.get("name", ""),
-            "qty": q,
-            "rate": it.get("rate", ""),
-            "amount": it.get("amount", "")
-        })
-    data["items"] = fixed_items
-
     if not data.get("shop_name") and raw_text:
         lines = [x.strip() for x in raw_text.splitlines() if x.strip()]
         for ln in lines[:15]:
             if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax|phone|mobile|email)\b", ln, re.I):
                 data["shop_name"] = ln[:80]
                 break
-
     if not data.get("bill_date"):
         data["bill_date"] = datetime.now().strftime("%Y-%m-%d")
     if not data.get("gst_number"):
@@ -623,34 +584,37 @@ def sanitize_sheet_name(name, fallback="Sheet"):
     return (name[:31] or fallback)
 
 
+# PREMIUM EXCEL GENERATOR (DYNAMIC FORMULAS & CLASSIC NAVY THEME)
 def build_excel_export(results):
     buffer = BytesIO()
     wb = openpyxl.Workbook()
-
+    
+    # 1. Main Overview Summary Tab Setup
     ws_summary = wb.active
     ws_summary.title = "Summary"
     ws_summary.views.sheetView[0].showGridLines = True
-
+    
+    # Classic Navy Theme Constants
     navy_dark = "1B365D"
     navy_light = "F0F4F8"
     border_gray = "D3D3D3"
     white = "FFFFFF"
-
+    
     font_title = Font(name="Calibri", size=16, bold=True, color=navy_dark)
     font_header = Font(name="Calibri", size=11, bold=True, color=white)
     font_bold = Font(name="Calibri", size=11, bold=True)
     font_regular = Font(name="Calibri", size=11)
-
+    
     fill_header = PatternFill(start_color=navy_dark, end_color=navy_dark, fill_type="solid")
     fill_zebra = PatternFill(start_color=navy_light, end_color=navy_light, fill_type="solid")
-
+    
     thin_side = Side(style='thin', color=border_gray)
     border_data = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
     border_total = Border(top=Side(style='thin', color='000000'), bottom=Side(style='double', color='000000'))
-
+    
     ws_summary["A1"] = "BATCH BILL PROCESSING OVERVIEW"
     ws_summary["A1"].font = font_title
-
+    
     summary_headers = ["Bill No.", "Source File", "Shop Name", "Bill Date", "GST Number", "Declared Total (₹)", "Calculated Total (₹)", "Difference (₹)", "Status", "Sheet Link"]
     for col_idx, text in enumerate(summary_headers, 1):
         cell = ws_summary.cell(row=3, column=col_idx, value=text)
@@ -658,22 +622,25 @@ def build_excel_export(results):
         cell.fill = fill_header
         cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
 
+    # 2. Iterate results and build separate formatted tabs
     for idx, item in enumerate(results, start=1):
         d = item.get("data") or {}
+        raw_text = str(d.get("raw_text") or "").strip()
         items = normalize_items(d.get("items"))
-
+        
         shop = str(d.get("shop_name") or "").strip() or f"Bill_{idx}"
         bill_date = str(d.get("bill_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
         gst_number = d.get("gst_number") or "N/A"
         bill_total = safe_float(d.get("total", 0))
-
+        
         base_name = sanitize_sheet_name(f"{idx}_{shop}")
         ws_item = wb.create_sheet(title=base_name)
         ws_item.views.sheetView[0].showGridLines = True
-
+        
+        # Individual Sheet Metadata Area
         ws_item["A1"] = "INVOICE RECORD BREAKDOWN"
         ws_item["A1"].font = font_title
-
+        
         meta_info = [
             ("Shop/Vendor Name:", shop, "Bill Date:", bill_date),
             ("GSTIN Number:", gst_number, "Source File:", item.get("source", "N/A"))
@@ -684,6 +651,7 @@ def build_excel_export(results):
             ws_item.cell(row=r_offset, column=4, value=row_data[2]).font = font_bold
             ws_item.cell(row=r_offset, column=5, value=row_data[3]).font = font_regular
 
+        # Item Headers
         item_headers = ["Sr. No.", "Particulars", "Quantity (No.)", "Rate (₹)", "Billed Amount (₹)", "Calculated Amount (₹)", "Status Check"]
         item_header_row = 6
         for col_idx, text in enumerate(item_headers, 1):
@@ -692,20 +660,19 @@ def build_excel_export(results):
             cell.fill = fill_header
             cell.alignment = Alignment(horizontal="center", vertical="center")
 
+        # Write Items List
         curr_row = item_header_row + 1
         for s_no, it in enumerate(items, start=1):
-            qty_val = it.get("qty", "1")
-            if str(qty_val).strip() in ["", "0", "0.0", "None", "null"]:
-                qty_val = "1"
-
             ws_item.cell(row=curr_row, column=1, value=s_no).alignment = Alignment(horizontal="center")
             ws_item.cell(row=curr_row, column=2, value=it.get("name", ""))
-            ws_item.cell(row=curr_row, column=3, value=safe_float(qty_val)).number_format = '#,##0'
+            ws_item.cell(row=curr_row, column=3, value=safe_float(it.get("qty", 0))).number_format = '#,##0'
             ws_item.cell(row=curr_row, column=4, value=safe_float(it.get("rate", 0))).number_format = '#,##0.00'
             ws_item.cell(row=curr_row, column=5, value=safe_float(it.get("amount", 0))).number_format = '#,##0.00'
+            
+            # Auto Formula Injection
             ws_item.cell(row=curr_row, column=6, value=f"=C{curr_row}*D{curr_row}").number_format = '#,##0.00'
             ws_item.cell(row=curr_row, column=7, value=f'=IF(E{curr_row}=F{curr_row},"Match","Mismatch")').alignment = Alignment(horizontal="center")
-
+            
             for c in range(1, 8):
                 cell = ws_item.cell(row=curr_row, column=c)
                 cell.font = font_regular
@@ -714,6 +681,7 @@ def build_excel_export(results):
                     cell.fill = fill_zebra
             curr_row += 1
 
+        # Sheet Summary Blocks
         curr_row += 1
         ws_item.cell(row=curr_row, column=2, value="Total Boarding Charges Summary").font = font_bold
         ws_item.cell(row=curr_row, column=5, value=bill_total).font = font_bold
@@ -723,6 +691,7 @@ def build_excel_export(results):
         ws_item.cell(row=curr_row, column=5).border = border_total
         ws_item.cell(row=curr_row, column=6).border = border_total
 
+        # Populate Global Summary Line row
         s_row = 3 + idx
         ws_summary.cell(row=s_row, column=1, value=idx).alignment = Alignment(horizontal="center")
         ws_summary.cell(row=s_row, column=2, value=item.get("source"))
@@ -730,16 +699,19 @@ def build_excel_export(results):
         ws_summary.cell(row=s_row, column=4, value=bill_date).alignment = Alignment(horizontal="center")
         ws_summary.cell(row=s_row, column=5, value=gst_number)
         ws_summary.cell(row=s_row, column=6, value=bill_total).number_format = '#,##0.00'
+        
+        # Cross reference formula connecting directly to the child tab
         ws_summary.cell(row=s_row, column=7, value=f"='{base_name}'!F{curr_row}").number_format = '#,##0.00'
         ws_summary.cell(row=s_row, column=8, value=f"=ABS(F{s_row}-G{s_row})").number_format = '#,##0.00'
         ws_summary.cell(row=s_row, column=9, value=f'=IF(H{s_row}<1,"Matched","Mismatch")').alignment = Alignment(horizontal="center")
-
+        
+        # Hyperlink to specific tab
         link_cell = ws_summary.cell(row=s_row, column=10, value="Go To Breakdown Sheet")
         link_cell.hyperlink = f"#'{base_name}'!A1"
         link_cell.font = Font(name="Calibri", size=11, color="0000FF", underline="single")
         link_cell.alignment = Alignment(horizontal="center")
 
-        for c in range(1, 10 + 1):
+        for c in range(1, 11):
             cell = ws_summary.cell(row=s_row, column=c)
             if not cell.font.color:
                 cell.font = font_regular
@@ -747,12 +719,14 @@ def build_excel_export(results):
             if s_row % 2 == 0:
                 cell.fill = fill_zebra
 
+        # Also push data to local SQLite DB for monitoring
         try:
             status_text = "Matched" if abs(safe_float(ws_item.cell(row=curr_row, column=6).value) - bill_total) < 1 else "Mismatch"
             insert_bill(shop, bill_date, gst_number, bill_total, safe_float(bill_total), status_text)
         except Exception:
             pass
 
+    # Dynamic Column Width Auto-Fitting
     for sheet in wb.worksheets:
         for col in sheet.columns:
             max_len = 0
