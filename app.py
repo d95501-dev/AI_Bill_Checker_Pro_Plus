@@ -3,6 +3,7 @@ import json
 import os
 import re
 import sqlite3
+import urllib.parse
 from datetime import datetime
 from io import BytesIO
 
@@ -169,38 +170,50 @@ def apply_theme_css():
     if theme_mode == "dark":
         st.markdown("""
             <style>
-            .stApp { background: linear-gradient(180deg, #0b1220 0%, #111827 100%); color: #e5e7eb; }
-            section[data-testid="stSidebar"] { background: linear-gradient(180deg, #0f172a 0%, #111827 100%); }
+            .stApp { background: #0b1220; color: #e5e7eb; }
+            section[data-testid="stSidebar"] { background: #0f172a; }
             section[data-testid="stSidebar"] * { color: #f8fafc !important; }
-            .stTextInput input, .stSelectbox div, .stFileUploader { border-radius: 12px; }
+            .stButton>button { background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important; color: white !important; }
             </style>
         """, unsafe_allow_html=True)
     else:
         st.markdown("""
             <style>
-            .stApp { background: linear-gradient(180deg, #f8fafc 0%, #eef2ff 100%); color: #0f172a; }
-            section[data-testid="stSidebar"] { background: linear-gradient(180deg, #0f172a 0%, #111827 100%); }
+            .stApp { background: #f8fafc; color: #0f172a; }
+            section[data-testid="stSidebar"] { background: #0f172a; }
             section[data-testid="stSidebar"] * { color: #f8fafc !important; }
-            .stTextInput input, .stSelectbox div, .stFileUploader { border-radius: 12px; }
             </style>
         """, unsafe_allow_html=True)
 
 def apply_css():
     st.markdown("""
         <style>
+        .stApp {
+            background: radial-gradient(circle at top left, #ffffff 0%, #eef2ff 45%, #e2e8f0 100%);
+        }
+
         .deep-csc-header {
-            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 50%, #311042 100%);
+            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 45%, #312e81 100%);
             padding: 28px 30px;
-            border-radius: 26px;
+            border-radius: 28px;
             margin-bottom: 18px;
-            border: 1px solid rgba(255,255,255,0.08);
-            box-shadow: 0 18px 50px rgba(15,23,42,0.18);
+            border: 1px solid rgba(255,255,255,0.10);
+            box-shadow:
+                0 18px 40px rgba(15, 23, 42, 0.22),
+                inset 0 1px 0 rgba(255,255,255,0.12);
+            transform: translateY(0);
+            transition: all 0.25s ease;
             display: flex;
             align-items: center;
             justify-content: space-between;
             gap: 18px;
             flex-wrap: wrap;
         }
+
+        .deep-csc-header:hover {
+            transform: translateY(-2px);
+        }
+
         .branding-text h1 {
             margin: 0;
             font-size: 34px !important;
@@ -209,12 +222,15 @@ def apply_css():
             background: linear-gradient(to right, #38bdf8, #c084fc, #f43f5e);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
+            text-shadow: 0 10px 30px rgba(0,0,0,0.18);
         }
+
         .branding-text p {
             margin: 6px 0 0 0;
             color: #cbd5e1;
             font-size: 14px;
         }
+
         .branding-badge {
             background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%);
             color: white !important;
@@ -226,6 +242,7 @@ def apply_css():
             text-transform: uppercase;
             box-shadow: 0 10px 25px rgba(139, 92, 246, 0.35);
         }
+
         .csc-meta-badge {
             background: rgba(255,255,255,0.08);
             border: 1px solid rgba(255,255,255,0.14);
@@ -235,7 +252,54 @@ def apply_css():
             font-size: 13px !important;
             line-height: 1.7;
             backdrop-filter: blur(10px);
+            box-shadow: 0 14px 35px rgba(15, 23, 42, 0.10);
         }
+
+        .metric-card {
+            background: rgba(255,255,255,0.82);
+            border: 1px solid rgba(148,163,184,0.18);
+            border-radius: 22px;
+            padding: 18px 20px;
+            box-shadow:
+                0 14px 35px rgba(15, 23, 42, 0.10),
+                inset 0 1px 0 rgba(255,255,255,0.7);
+            backdrop-filter: blur(10px);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+
+        .metric-card:hover {
+            transform: translateY(-4px);
+            box-shadow: 0 18px 45px rgba(15, 23, 42, 0.14);
+        }
+
+        .metric-label {
+            color: #64748b;
+            font-size: 13px;
+            margin-bottom: 8px;
+        }
+
+        .metric-value {
+            font-size: 28px;
+            font-weight: 800;
+            color: #0f172a;
+            line-height: 1.1;
+        }
+
+        .metric-sub {
+            margin-top: 6px;
+            color: #64748b;
+            font-size: 13px;
+        }
+
+        .section-card {
+            background: rgba(255,255,255,0.78);
+            border: 1px solid rgba(148,163,184,0.16);
+            border-radius: 22px;
+            padding: 18px;
+            box-shadow: 0 12px 30px rgba(15, 23, 42, 0.05);
+            backdrop-filter: blur(8px);
+        }
+
         .stButton > button {
             background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important;
             color: white !important;
@@ -243,64 +307,48 @@ def apply_css():
             border: none !important;
             border-radius: 14px !important;
             padding: 12px 22px !important;
-            box-shadow: 0 10px 24px rgba(37, 99, 235, 0.28);
+            box-shadow: 0 12px 26px rgba(37,99,235,0.28);
+            transition: all 0.2s ease;
         }
+
         .stButton > button:hover {
-            transform: translateY(-1px);
-            box-shadow: 0 14px 28px rgba(37, 99, 235, 0.36);
+            transform: translateY(-2px);
+            box-shadow: 0 16px 30px rgba(37,99,235,0.36);
         }
+
         .stTabs [data-baseweb="tab-list"] {
             gap: 10px;
             background: rgba(255,255,255,0.55);
             padding: 8px;
             border-radius: 18px;
-            box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+            box-shadow: 0 12px 30px rgba(15, 23, 42, 0.08);
         }
+
         .stTabs [data-baseweb="tab"] {
             border-radius: 14px;
             padding: 10px 18px;
-            background: transparent;
             font-weight: 700;
         }
+
         .stTabs [aria-selected="true"] {
             background: linear-gradient(135deg, #0f172a 0%, #4338ca 100%) !important;
             color: white !important;
         }
+
         div[data-testid="stDataFrame"] {
             border-radius: 18px;
             overflow: hidden;
             box-shadow: 0 14px 35px rgba(15, 23, 42, 0.08);
         }
-        .metric-card {
-            background: rgba(255,255,255,0.82);
-            border: 1px solid rgba(148,163,184,0.18);
-            border-radius: 20px;
-            padding: 18px 20px;
-            box-shadow: 0 12px 30px rgba(15,23,42,0.06);
+
+        section[data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #0f172a 0%, #111827 100%);
         }
-        .metric-label {
-            color: #64748b;
-            font-size: 13px;
-            margin-bottom: 8px;
+
+        section[data-testid="stSidebar"] * {
+            color: #f8fafc !important;
         }
-        .metric-value {
-            font-size: 28px;
-            font-weight: 800;
-            color: #0f172a;
-            line-height: 1.1;
-        }
-        .metric-sub {
-            margin-top: 6px;
-            color: #64748b;
-            font-size: 13px;
-        }
-        .section-card {
-            background: rgba(255,255,255,0.78);
-            border: 1px solid rgba(148,163,184,0.16);
-            border-radius: 20px;
-            padding: 18px;
-            box-shadow: 0 12px 30px rgba(15,23,42,0.05);
-        }
+
         .block-container {
             padding-top: 1.1rem;
             padding-bottom: 2rem;
@@ -316,6 +364,22 @@ def metric_card(label, value, sub=""):
             <div class="metric-sub">{sub}</div>
         </div>
     """, unsafe_allow_html=True)
+
+def render_metrics(df):
+    c1, c2, c3, c4 = st.columns(4)
+    total_files = len(df) if df is not None and not df.empty else 0
+    matched = int((df["status"] == "Matched").sum()) if total_files else 0
+    mismatch = int((df["status"] == "Mismatch").sum()) if total_files else 0
+    review = int((df["status"] == "Needs Review").sum()) if total_files else 0
+
+    with c1:
+        metric_card("Files Processed", total_files, "Uploaded this session")
+    with c2:
+        metric_card("Matched Bills", matched, "Auto verified")
+    with c3:
+        metric_card("Mismatch / Review", mismatch + review, "Needs attention")
+    with c4:
+        metric_card("OCR Provider", st.session_state.get("selected_provider", "Gemini"), "Current mode")
 
 @st.cache_resource
 def setup_gemini():
@@ -864,8 +928,8 @@ def build_excel_export(results):
                         max_len = max(max_len, len(val_str))
             ws.column_dimensions[col_letter].width = max(max_len + 4, 15)
 
-    ws1.column_dimensions["B"].width = 25
     ws1.column_dimensions["A"].width = 22
+    ws1.column_dimensions["B"].width = 25
 
     try:
         for b_no, period, orig_total in bill_summaries:
@@ -930,16 +994,28 @@ def render_theme_toggle(location="main"):
         st.session_state["theme_mode"] = mode
         st.rerun()
 
-def render_metrics(df):
-    c1, c2, c3, c4 = st.columns(4)
-    total_files = len(df) if df is not None and not df.empty else 0
-    matched = int((df["status"] == "Matched").sum()) if total_files else 0
-    mismatch = int((df["status"] == "Mismatch").sum()) if total_files else 0
-    review = int((df["status"] == "Needs Review").sum()) if total_files else 0
-    with c1: metric_card("Files Processed", total_files, "Uploaded this session")
-    with c2: metric_card("Matched Bills", matched, "Auto verified")
-    with c3: metric_card("Mismatch / Review", mismatch + review, "Needs attention")
-    with c4: metric_card("OCR Provider", st.session_state.get("selected_provider", "Gemini"), "Current mode")
+def make_share_text(df=None):
+    total = len(df) if df is not None and not df.empty else 0
+    matched = int((df["status"] == "Matched").sum()) if total else 0
+    mismatch = int((df["status"] == "Mismatch").sum()) if total else 0
+    review = int((df["status"] == "Needs Review").sum()) if total else 0
+
+    return (
+        f"{APP_TITLE}\n"
+        f"Files Processed: {total}\n"
+        f"Matched: {matched}\n"
+        f"Mismatch: {mismatch}\n"
+        f"Needs Review: {review}"
+    )
+
+def share_whatsapp(text):
+    return "https://wa.me/?text=" + urllib.parse.quote(text)
+
+def share_telegram(text):
+    return "https://t.me/share/url?url=&text=" + urllib.parse.quote(text)
+
+def share_email(text, subject="Bill Dashboard Report"):
+    return "mailto:?subject=" + urllib.parse.quote(subject) + "&body=" + urllib.parse.quote(text)
 
 def render_upload_module():
     st.markdown("""
@@ -1014,6 +1090,16 @@ def render_upload_module():
                 st.markdown('<div class="section-card">', unsafe_allow_html=True)
                 st.dataframe(df, use_container_width=True)
                 st.markdown('</div>', unsafe_allow_html=True)
+
+                summary_text = make_share_text(df)
+                s1, s2, s3 = st.columns(3)
+                with s1:
+                    st.link_button("📱 Share on WhatsApp", share_whatsapp(summary_text), use_container_width=True)
+                with s2:
+                    st.link_button("✈️ Share on Telegram", share_telegram(summary_text), use_container_width=True)
+                with s3:
+                    st.link_button("📧 Share by Email", share_email(summary_text), use_container_width=True)
+
                 excel_data = build_excel_export(all_results)
                 st.download_button(
                     "📥 Download Excel Report",
@@ -1046,12 +1132,9 @@ def main():
     if not st.session_state.logged_in:
         do_login()
     else:
-        with st.sidebar:
-            st.markdown("### Control Panel")
-            st.caption("Premium dashboard controls")
-            if st.button("Logout", use_container_width=True):
-                terminate_session()
         render_upload_module()
+        if st.sidebar.button("Logout"):
+            terminate_session()
 
 if __name__ == "__main__":
     main()
