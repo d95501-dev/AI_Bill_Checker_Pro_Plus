@@ -298,6 +298,7 @@ def preprocess_for_ocr(image):
     try:
         import cv2
         import numpy as np
+
         img = np.array(image)
         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
         gray = cv2.GaussianBlur(gray, (3, 3), 0)
@@ -305,7 +306,9 @@ def preprocess_for_ocr(image):
         return Image.fromarray(thresh)
     except Exception:
         return image
-        def convert_pdf_to_images(file_bytes):
+
+
+def convert_pdf_to_images(file_bytes):
     if fitz is not None:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         images = []
@@ -314,11 +317,14 @@ def preprocess_for_ocr(image):
             images.append(Image.frombytes("RGB", [pix.width, pix.height], pix.samples))
         doc.close()
         return images
+
     if pdfium is not None:
         pdf = pdfium.PdfDocument(file_bytes)
         return [pdf[i].render(scale=2).to_pil().convert("RGB") for i in range(len(pdf))]
+
     if convert_from_bytes is not None:
         return convert_from_bytes(file_bytes, dpi=200)
+
     raise RuntimeError("No PDF rendering library available.")
 
 
@@ -641,7 +647,19 @@ def build_batch_summary(results):
     rows = []
     for idx, item in enumerate(results, 1):
         row = normalize_bill_row(item, idx)
-        rows.append({k: row[k] for k in ["page", "source", "shop_name", "bill_date", "gst_number", "bill_total", "calculated_total", "difference", "status"]})
+        rows.append(
+            {
+                "page": row["page"],
+                "source": row["source"],
+                "shop_name": row["shop_name"],
+                "bill_date": row["bill_date"],
+                "gst_number": row["gst_number"],
+                "bill_total": row["bill_total"],
+                "calculated_total": row["calculated_total"],
+                "difference": row["difference"],
+                "status": row["status"],
+            }
+        )
         insert_bill(row["shop_name"], row["bill_date"], row["gst_number"], row["bill_total"], row["calculated_total"], row["status"])
     return pd.DataFrame(rows)
 
@@ -728,7 +746,16 @@ def build_excel_export(results):
 
     normalized = [normalize_bill_row(r, i + 1) for i, r in enumerate(results)]
     for idx, row in enumerate(normalized, 6):
-        values = [idx - 5, row["source"], row["shop_name"], row["bill_date"], row["bill_total"], row["calculated_total"], row["difference"], row["status"]]
+        values = [
+            idx - 5,
+            row["source"],
+            row["shop_name"],
+            row["bill_date"],
+            row["bill_total"],
+            row["calculated_total"],
+            row["difference"],
+            row["status"],
+        ]
         for cidx, val in enumerate(values, 1):
             cell = ws1.cell(row=idx, column=cidx, value=val)
             cell.font = font_regular
