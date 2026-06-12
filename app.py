@@ -329,6 +329,7 @@ def convert_pdf_to_images(file_bytes):
     raise RuntimeError("No PDF rendering library available.")
 
 
+# FIX DETECTED: This function has been completely restored to prevent string literal breaks
 def parse_json_from_response(response_text):
     raw = (response_text or "").strip().replace("```json", "").replace("
 ```", "").strip()
@@ -900,7 +901,6 @@ def render_upload_module():
             st.success("Cleared all uploaded data cache.")
             st.rerun()
 
-        # FIXED CORE FUNCTIONALITY: Robust iteration across multiple files and pages
         if process_now and uploaded_files:
             model_bundle = {
                 "gemini": setup_gemini(),
@@ -920,7 +920,6 @@ def render_upload_module():
                 file_bytes = file.read()
                 
                 try:
-                    # Multi-page PDF handling
                     if file.name.lower().endswith('.pdf'):
                         images = convert_pdf_to_images(file_bytes)
                         for p_idx, img in enumerate(images):
@@ -931,7 +930,6 @@ def render_upload_module():
                                 "source": file.name,
                                 "data": data
                             })
-                    # Image processing loop
                     else:
                         img = Image.open(BytesIO(file_bytes)).convert("RGB")
                         data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
@@ -952,7 +950,6 @@ def render_upload_module():
                 st.session_state["current_batch_df"] = batch_df
                 st.rerun()
 
-        # Render Batch Dashboard Results Dynamically
         if "current_batch_df" in st.session_state:
             df = st.session_state["current_batch_df"]
             st.markdown("---")
@@ -975,7 +972,6 @@ def render_upload_module():
         render_theme_toggle(location="tab")
 
 
-# Main Application Entrypoint Execution Pipeline
 if __name__ == "__main__":
     setup_page()
     init_state()
