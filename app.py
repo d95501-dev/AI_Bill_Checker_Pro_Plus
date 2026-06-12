@@ -174,17 +174,11 @@ def logout():
 def apply_theme_css():
     dark = st.session_state.get("theme_mode", "light") == "dark"
     bg = "#0b1220" if dark else "#f8fafc"
-    sidebar = "#0f172a" if dark else "#0f172a"
+    sidebar = "#0f172a"
     text = "#e5e7eb" if dark else "#0f172a"
     sidebar_text = "#f8fafc"
     st.markdown(
-        f"""
-        <style>
-        .stApp {{ background: {bg}; color: {text}; }}
-        section[data-testid="stSidebar"] {{ background: {sidebar}; }}
-        section[data-testid="stSidebar"] * {{ color: {sidebar_text} !important; }}
-        </style>
-        """,
+        f"""<style>.stApp {{ background: {bg}; color: {text}; }} section[data-testid="stSidebar"] {{ background: {sidebar}; }} section[data-testid="stSidebar"] * {{ color: {sidebar_text} !important; }}</style>""",
         unsafe_allow_html=True,
     )
 
@@ -193,9 +187,7 @@ def apply_css():
     st.markdown(
         """
         <style>
-        .stApp {
-            background: radial-gradient(circle at top left, #ffffff 0%, #eef2ff 45%, #e2e8f0 100%);
-        }
+        .stApp { background: radial-gradient(circle at top left, #ffffff 0%, #eef2ff 45%, #e2e8f0 100%); }
         .deep-csc-header {
             background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 45%, #312e81 100%);
             padding: 28px 30px;
@@ -313,9 +305,7 @@ def preprocess_for_ocr(image):
         return Image.fromarray(thresh)
     except Exception:
         return image
-
-
-def convert_pdf_to_images(file_bytes):
+        def convert_pdf_to_images(file_bytes):
     if fitz is not None:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         images = []
@@ -343,7 +333,7 @@ def parse_json_from_response(response_text):
 def safe_float(value):
     try:
         clean_val = str(value).replace(",", "").replace("/", "").replace("-", "").strip()
-        return float(clean_val)
+        return float(clean_val) if clean_val else 0.0
     except Exception:
         return 0.0
 
@@ -354,32 +344,29 @@ def normalize_items(items):
     cleaned = []
     for it in items:
         if isinstance(it, dict):
-            cleaned.append({"name": it.get("name") or "", "qty": it.get("qty") or "", "rate": it.get("rate") or "", "amount": it.get("amount") or ""})
+            cleaned.append(
+                {
+                    "name": it.get("name") or "",
+                    "qty": it.get("qty") or "",
+                    "rate": it.get("rate") or "",
+                    "amount": it.get("amount") or "",
+                }
+            )
     return cleaned
 
 
 def build_schema_prompt():
     return """
 You are an expert document extraction specialist specializing in handwritten Indian market bills.
-The input image contains multiple sequential or side-by-side cash/credit memo slips from "GEETA FRUIT & VEGETABLES SUPPLIERS".
-
-Extract ALL data from ALL visible slips combined into a single flat JSON object using the schema below.
-
-Return ONLY valid JSON:
+Return ONLY valid JSON with schema:
 {
-  "shop_name": "GEETA FRUIT & VEGETABLES SUPPLIERS",
-  "bill_date": string,
-  "gst_number": string or null,
-  "items": [{"name": string, "qty": string, "rate": string, "amount": string}],
-  "total": string
+  "shop_name": "string",
+  "bill_date": "YYYY-MM-DD or string",
+  "gst_number": "string or null",
+  "items": [{"name":"string","qty":"string","rate":"string","amount":"string"}],
+  "total": "string"
 }
-
-Strict Rules:
-1. shop_name: Always set explicitly to "GEETA FRUIT & VEGETABLES SUPPLIERS".
-2. bill_date: Detect the dates on the slips and return the most prominent date in YYYY-MM-DD format.
-3. items: Aggregate EVERY single item entry from ALL visible slips into this single flat array. Clean item names from handwritten noise. Clean qty, rate, and amount to numeric strings only.
-4. total: Calculate the cumulative sum of all visible slip totals and ensure it matches the item amounts.
-5. No markdown or explanation. Return clean JSON only.
+Extract ALL visible data from the bill. No markdown, no explanation.
 """
 
 
@@ -428,12 +415,72 @@ def is_gemini_quota_error(err):
     return ("429" in msg) or ("quota" in msg) or ("resource_exhausted" in msg) or ("rate limit" in msg)
 
 
+def heuristic_extract_items(text):
+    items = []
+    for ln in [x.strip() for x in (text or "").splitlines() if x.strip()]:
+        if re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
+            continue
+        m = re.match(r"(.+?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$", ln)
+        if m:
+            items.append(
+                {
+                    "name": m.group(1).strip(),
+                    "qty": m.group(2),
+                    "rate": m.group(3),
+                    "amount": m.group(4),
+                }
+            )
+    return items[:50]
+
+
+def heuristic_parse_from_text(text):
+    text = (text or "").strip()
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    if not text:
+        return OCRResult(None, None, None, [], 0.0, "")
+    shop_name = None
+    for ln in lines[:12]:
+        if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
+            shop_name = ln[:80]
+            break
+    gst_number = None
+    bill_date = None
+    total = None
+    for p in [r"\bGSTIN[:\s-]*([0-9A-Z]{15})\b", r"\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z])\b"]:
+        m = re.search(p, text, re.I)
+        if m:
+            gst_number = m.group(1)
+            break
+    for p in [r"\b(\d{2}[/-]\d{2}[/-]\d{2,4})\b", r"\b(\d{4}[/-]\d{2}[/-]\d{2})\b", r"\b(\d{2}\s+[A-Za-z]{3,9}\s+\d{2,4})\b"]:
+        m = re.search(p, text)
+        if m:
+            bill_date = m.group(1)
+            break
+    for p in [
+        r"\bGrand Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
+        r"\bNet Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
+        r"\bTotal[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
+        r"\bAmount[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
+        r"\bBill Amount[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
+    ]:
+        m = re.search(p, text, re.I)
+        if m:
+            total = m.group(1)
+            break
+    if not shop_name:
+        for ln in lines:
+            if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax|phone|mobile|email)\b", ln, re.I):
+                shop_name = ln[:80]
+                break
+    return OCRResult(shop_name, bill_date, gst_number, heuristic_extract_items(text), safe_float(total or 0), text)
+
+
 def normalize_result(data, fallback_text=""):
     if not isinstance(data, dict):
         data = {}
     raw_text = str(data.get("raw_text") or fallback_text or "").strip()
-    parsed = heuristic_parse_from_text(raw_text) if raw_text else None
-    if parsed:
+    if not data.get("shop_name") and raw_text:
+        parsed = heuristic_parse_from_text(raw_text)
         for k in ["shop_name", "bill_date", "gst_number", "items", "total"]:
             if not data.get(k):
                 data[k] = getattr(parsed, k)
@@ -454,56 +501,12 @@ def normalize_result(data, fallback_text=""):
     return data
 
 
-def heuristic_extract_items(text):
-    items = []
-    for ln in [x.strip() for x in (text or "").splitlines() if x.strip()]:
-        if re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
-            continue
-        m = re.match(r"(.+?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$", ln)
-        if m:
-            items.append({"name": m.group(1).strip(), "qty": m.group(2), "rate": m.group(3), "amount": m.group(4)})
-    return items[:30]
-
-
-def heuristic_parse_from_text(text):
-    text = (text or "").strip()
-    if not text:
-        return OCRResult(None, None, None, [], 0.0, "")
-    lines = [x.strip() for x in text.splitlines() if x.strip()]
-    shop_name = None
-    for ln in lines[:12]:
-        if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
-            shop_name = ln[:80]
-            break
-    gst_number = None
-    bill_date = None
-    total = None
-    for p in [r"\bGSTIN[:\s-]*([0-9A-Z]{15})\b", r"\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z])\b"]:
-        m = re.search(p, text, re.I)
-        if m:
-            gst_number = m.group(1)
-            break
-    for p in [r"\b(\d{2}[/-]\d{2}[/-]\d{2,4})\b", r"\b(\d{4}[/-]\d{2}[/-]\d{2})\b", r"\b(\d{2}\s+[A-Za-z]{3,9}\s+\d{2,4})\b"]:
-        m = re.search(p, text)
-        if m:
-            bill_date = m.group(1)
-            break
-    for p in [r"\bGrand Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b", r"\bNet Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b", r"\bTotal[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b", r"\bAmount[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b", r"\bBill Amount[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b"]:
-        m = re.search(p, text, re.I)
-        if m:
-            total = m.group(1)
-            break
-    if not shop_name:
-        for ln in lines:
-            if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax|phone|mobile|email)\b", ln, re.I):
-                shop_name = ln[:80]
-                break
-    return OCRResult(shop_name, bill_date, gst_number, heuristic_extract_items(text), safe_float(total or 0), text)
-
-
 def try_gemini(model, image):
     try:
-        resp = model.generate_content([build_schema_prompt(), image], generation_config={"temperature": 0, "response_mime_type": "application/json"})
+        resp = model.generate_content(
+            [build_schema_prompt(), image],
+            generation_config={"temperature": 0, "response_mime_type": "application/json"},
+        )
         data = parse_json_from_response(getattr(resp, "text", ""))
         st.session_state.gemini_available = True
         st.session_state.last_gemini_error_time = None
@@ -521,10 +524,13 @@ def try_perplexity(client, image):
         model=secret_or_default("PERPLEXITY_MODEL", "sonar-pro"),
         messages=[
             {"role": "system", "content": build_schema_prompt()},
-            {"role": "user", "content": [
-                {"type": "text", "text": "Extract invoice JSON from this image."},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
-            ]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Extract invoice JSON from this image."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
+                ],
+            },
         ],
         temperature=0.0,
     )
@@ -537,10 +543,13 @@ def try_openai(client, image):
         model=secret_or_default("OPENAI_MODEL", "gpt-4o-mini"),
         messages=[
             {"role": "system", "content": build_schema_prompt()},
-            {"role": "user", "content": [
-                {"type": "text", "text": "Extract invoice JSON from this image."},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
-            ]},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Extract invoice JSON from this image."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
+                ],
+            },
         ],
         response_format={"type": "json_object"},
     )
@@ -602,39 +611,38 @@ def get_history_df():
         return pd.read_sql_query("SELECT * FROM bills ORDER BY timestamp DESC", conn)
 
 
+def normalize_bill_row(row, fallback_index=1):
+    d = row.get("data") or {}
+    raw_text = str(d.get("raw_text") or "").strip()
+    items = normalize_items(d.get("items"))
+    tmp_df = pd.DataFrame(items)
+    calc_total = float(pd.to_numeric(tmp_df["amount"], errors="coerce").fillna(0).sum()) if not tmp_df.empty else 0.0
+    total = safe_float(d.get("total", 0))
+    shop = str(d.get("shop_name") or "").strip() or "Unknown Shop"
+    bill_date = str(d.get("bill_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+    gst_number = d.get("gst_number") or "N/A"
+    status = "Needs Review" if total <= 0 else ("Matched" if abs(calc_total - total) < 1 else "Mismatch")
+    return {
+        "page": row.get("page", fallback_index),
+        "source": row.get("source", ""),
+        "shop_name": shop,
+        "bill_date": bill_date,
+        "gst_number": gst_number,
+        "bill_total": total,
+        "calculated_total": calc_total,
+        "difference": abs(calc_total - total),
+        "status": status,
+        "items": items,
+        "raw_text": raw_text,
+    }
+
+
 def build_batch_summary(results):
     rows = []
-    for item in results:
-        d = item.get("data") or {}
-        raw_text = str(d.get("raw_text") or "").strip()
-        items = normalize_items(d.get("items"))
-        tmp_df = pd.DataFrame(items)
-        calc_total = float(pd.to_numeric(tmp_df["amount"], errors="coerce").fillna(0).sum()) if not tmp_df.empty else 0.0
-        total = safe_float(d.get("total", 0))
-        shop = str(d.get("shop_name") or "").strip()
-        bill_date = str(d.get("bill_date") or "").strip()
-        if not shop and raw_text:
-            for ln in [x.strip() for x in raw_text.splitlines() if x.strip()][:10]:
-                if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
-                    shop = ln[:80]
-                    break
-        if not shop:
-            shop = "Unknown Shop"
-        if not bill_date:
-            bill_date = datetime.now().strftime("%Y-%m-%d")
-        status = "Needs Review" if total <= 0 else ("Matched" if abs(calc_total - total) < 1 else "Mismatch")
-        rows.append({
-            "page": item.get("page"),
-            "source": item.get("source"),
-            "shop_name": shop,
-            "bill_date": bill_date,
-            "gst_number": d.get("gst_number") or "N/A",
-            "bill_total": total,
-            "calculated_total": calc_total,
-            "difference": abs(calc_total - total),
-            "status": status,
-        })
-        insert_bill(shop, bill_date, d.get("gst_number") or "N/A", total, calc_total, status)
+    for idx, item in enumerate(results, 1):
+        row = normalize_bill_row(item, idx)
+        rows.append({k: row[k] for k in ["page", "source", "shop_name", "bill_date", "gst_number", "bill_total", "calculated_total", "difference", "status"]})
+        insert_bill(row["shop_name"], row["bill_date"], row["gst_number"], row["bill_total"], row["calculated_total"], row["status"])
     return pd.DataFrame(rows)
 
 
@@ -659,10 +667,26 @@ def share_email(text, subject="Bill Dashboard Report"):
 
 
 def render_theme_toggle(location="main"):
-    mode = st.radio("Theme", ["light", "dark"], horizontal=True, index=0 if st.session_state.get("theme_mode", "light") == "light" else 1, key=f"theme_radio_{location}")
+    mode = st.radio(
+        "Theme",
+        ["light", "dark"],
+        horizontal=True,
+        index=0 if st.session_state.get("theme_mode", "light") == "light" else 1,
+        key=f"theme_radio_{location}",
+    )
     if mode != st.session_state.get("theme_mode", "light"):
         st.session_state["theme_mode"] = mode
         st.rerun()
+
+
+def _auto_widths(ws, min_width=12, max_width=30):
+    for col in ws.columns:
+        max_len = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            if cell.value is not None:
+                max_len = max(max_len, len(str(cell.value)))
+        ws.column_dimensions[col_letter].width = min(max(max_len + 2, min_width), max_width)
 
 
 def build_excel_export(results):
@@ -688,107 +712,118 @@ def build_excel_export(results):
     thin_side = Side(border_style="thin", color=gray_border)
     border_all = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
 
-    ws1["A1"] = "SHRI BALA JI DAIRY - INVOICE SUMMARY & AUDIT"
+    ws1["A1"] = "GEETA FRUIT & VEGETABLES SUPPLIERS - INVOICE SUMMARY & AUDIT"
     ws1["A1"].font = font_title
-    ws1["A2"] = "Client: Director, NIT Kurukshetra (K.K.R.) | Period: April 2026"
+    ws1["A2"] = f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     ws1["A2"].font = Font(name="Calibri", size=11, italic=True)
-    ws1["A4"] = "1. Statement / Bill-wise Breakdown"
+    ws1["A4"] = "1. Bill-wise Breakdown"
     ws1["A4"].font = font_section
 
-    headers_bill = ["Bill No.", "Period / Dates Covered", "Original Invoice Total", "Calculated Total", "Status / Audit"]
+    headers_bill = ["Bill No.", "Source File", "Shop Name", "Bill Date", "Original Total", "Calculated Total", "Difference", "Status"]
     for col_num, h in enumerate(headers_bill, 1):
         c = ws1.cell(row=5, column=col_num, value=h)
         c.font = font_header
         c.fill = fill_header
         c.alignment = Alignment(horizontal="center", vertical="center")
 
-    bill_summaries = [(705, "09/04/26 - 13/04/26", 4142), (707, "19/04/26 - 21/04/26", 2856), (708, "22/04/26 - 24/04/26", 1778), (739, "25/04/26 - 28/04/26", 2568), (710, "29/04/26 - 30/04/26", 1432)]
-    for idx, (b_no, period, orig_total) in enumerate(bill_summaries, 6):
-        ws1.cell(row=idx, column=1, value=b_no)
-        ws1.cell(row=idx, column=2, value=period)
-        ws1.cell(row=idx, column=3, value=orig_total).number_format = "₹#,##0"
-        ws1.cell(row=idx, column=4, value=f"=SUMIF('Detailed Transactions'!A:A, A{idx}, 'Detailed Transactions'!G:G)").number_format = "₹#,##0"
-        ws1.cell(row=idx, column=5, value=f'=IF(C{idx}=D{idx}, "Verified Matched", "Mismatch")')
-        for c in range(1, 6):
-            cell = ws1.cell(row=idx, column=c)
+    normalized = [normalize_bill_row(r, i + 1) for i, r in enumerate(results)]
+    for idx, row in enumerate(normalized, 6):
+        values = [idx - 5, row["source"], row["shop_name"], row["bill_date"], row["bill_total"], row["calculated_total"], row["difference"], row["status"]]
+        for cidx, val in enumerate(values, 1):
+            cell = ws1.cell(row=idx, column=cidx, value=val)
             cell.font = font_regular
             cell.border = border_all
             if idx % 2 == 1:
                 cell.fill = fill_zebra
+        ws1.cell(row=idx, column=5).number_format = "₹#,##0.00"
+        ws1.cell(row=idx, column=6).number_format = "₹#,##0.00"
+        ws1.cell(row=idx, column=7).number_format = "₹#,##0.00"
 
-    ws1.cell(row=11, column=1, value="Grand Total").font = font_bold
-    ws1.cell(row=11, column=3, value="=SUM(C6:C10)").font = font_bold
-    ws1.cell(row=11, column=3).number_format = "₹#,##0"
-    ws1.cell(row=11, column=4, value="=SUM(D6:D10)").font = font_bold
-    ws1.cell(row=11, column=4).number_format = "₹#,##0"
+    end_row = 5 + len(normalized)
+    ws1.cell(row=end_row + 1, column=1, value="Grand Total").font = font_bold
+    ws1.cell(row=end_row + 1, column=5, value=f"=SUM(E6:E{end_row})").font = font_bold
+    ws1.cell(row=end_row + 1, column=5).number_format = "₹#,##0.00"
+    ws1.cell(row=end_row + 1, column=6, value=f"=SUM(F6:F{end_row})").font = font_bold
+    ws1.cell(row=end_row + 1, column=6).number_format = "₹#,##0.00"
 
     ws1["A14"] = "2. Product Consumption Summary"
     ws1["A14"].font = font_section
-
-    headers_prod = ["Product Name (English)", "Product Name (Hindi)", "Total Qty Sold (Kg)", "Standard Rate (₹/Kg)", "Total Amount (₹)"]
+    headers_prod = ["Product Name", "Total Qty", "Avg Rate", "Total Amount"]
     for col_num, h in enumerate(headers_prod, 1):
         c = ws1.cell(row=15, column=col_num, value=h)
         c.font = font_header
         c.fill = fill_header
         c.alignment = Alignment(horizontal="center", vertical="center")
 
-    for idx, (eng, hin) in enumerate([("Milk", "दूध"), ("Curd", "दही"), ("Paneer", "पनीर")], 16):
-        ws1.cell(row=idx, column=1, value=eng)
-        ws1.cell(row=idx, column=2, value=hin)
-        ws1.cell(row=idx, column=3, value=f"=SUMIF('Detailed Transactions'!D:D, A{idx}, 'Detailed Transactions'!E:E)").number_format = "#,##0.0"
-        ws1.cell(row=idx, column=4, value=f"=AVERAGEIF('Detailed Transactions'!D:D, A{idx}, 'Detailed Transactions'!F:F)").number_format = "₹#,##0"
-        ws1.cell(row=idx, column=5, value=f"=SUMIF('Detailed Transactions'!D:D, A{idx}, 'Detailed Transactions'!G:G)").number_format = "₹#,##0"
-        for c in range(1, 6):
+    item_aggregate = {}
+    for row in normalized:
+        for item in row["items"]:
+            name = str(item.get("name") or "").strip() or "Unknown"
+            qty = safe_float(item.get("qty", 0))
+            rate = safe_float(item.get("rate", 0))
+            amount = safe_float(item.get("amount", 0))
+            if name not in item_aggregate:
+                item_aggregate[name] = {"qty": 0.0, "rate_sum": 0.0, "rate_count": 0, "amount": 0.0}
+            item_aggregate[name]["qty"] += qty
+            if rate > 0:
+                item_aggregate[name]["rate_sum"] += rate
+                item_aggregate[name]["rate_count"] += 1
+            item_aggregate[name]["amount"] += amount if amount > 0 else qty * rate
+
+    prod_start = 16
+    last_prod_row = prod_start - 1
+    for idx, (name, data) in enumerate(sorted(item_aggregate.items()), prod_start):
+        last_prod_row = idx
+        avg_rate = data["rate_sum"] / data["rate_count"] if data["rate_count"] else 0
+        ws1.cell(row=idx, column=1, value=name)
+        ws1.cell(row=idx, column=2, value=data["qty"]).number_format = "#,##0.0"
+        ws1.cell(row=idx, column=3, value=avg_rate).number_format = "₹#,##0.00"
+        ws1.cell(row=idx, column=4, value=data["amount"]).number_format = "₹#,##0.00"
+        for c in range(1, 5):
             cell = ws1.cell(row=idx, column=c)
             cell.font = font_regular
             cell.border = border_all
+            if idx % 2 == 1:
+                cell.fill = fill_zebra
 
-    ws1.cell(row=19, column=1, value="Total").font = font_bold
-    ws1.cell(row=19, column=5, value="=SUM(E16:E18)").font = font_bold
-    ws1.cell(row=19, column=5).number_format = "₹#,##0"
+    if last_prod_row >= prod_start:
+        ws1.cell(row=last_prod_row + 1, column=1, value="Total").font = font_bold
+        ws1.cell(row=last_prod_row + 1, column=2, value=f"=SUM(B{prod_start}:B{last_prod_row})").font = font_bold
+        ws1.cell(row=last_prod_row + 1, column=4, value=f"=SUM(D{prod_start}:D{last_prod_row})").font = font_bold
+        ws1.cell(row=last_prod_row + 1, column=4).number_format = "₹#,##0.00"
 
     ws2 = wb.create_sheet(title="Detailed Transactions")
     ws2.views.sheetView[0].showGridLines = True
-    headers_det = ["Bill No", "Date", "Particulars (Hindi)", "Particulars (English)", "Qty (Kg)", "Rate (₹)", "Amount (₹)"]
+    headers_det = ["Bill No", "Source File", "Date", "Particulars", "Qty", "Rate", "Amount"]
     for col_num, h in enumerate(headers_det, 1):
         c = ws2.cell(row=1, column=col_num, value=h)
         c.font = font_header
         c.fill = fill_header
         c.alignment = Alignment(horizontal="center", vertical="center")
 
-    compiled_data = [
-        {"Bill No": 705, "Date": "2026-04-09", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 8.0, "Rate": 58},
-        {"Bill No": 705, "Date": "2026-04-09", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 8.0, "Rate": 60},
-        {"Bill No": 705, "Date": "2026-04-09", "Item (Hindi)": "पनीर", "Item (English)": "Paneer", "Qty (Kg)": 3.5, "Rate": 300},
-    ]
+    det_row = 2
+    for bill_no, row in enumerate(normalized, 1):
+        for item in row["items"]:
+            name = str(item.get("name") or "").strip() or "Unknown"
+            qty = safe_float(item.get("qty", 0))
+            rate = safe_float(item.get("rate", 0))
+            amount = safe_float(item.get("amount", 0))
+            if amount <= 0 and qty > 0 and rate > 0:
+                amount = qty * rate
+            vals = [bill_no, row["source"], row["bill_date"], name, qty, rate, amount]
+            for cidx, val in enumerate(vals, 1):
+                cell = ws2.cell(row=det_row, column=cidx, value=val)
+                cell.font = font_regular
+                cell.border = border_all
+                if det_row % 2 == 1:
+                    cell.fill = fill_zebra
+            ws2.cell(row=det_row, column=5).number_format = "#,##0.0"
+            ws2.cell(row=det_row, column=6).number_format = "₹#,##0.00"
+            ws2.cell(row=det_row, column=7).number_format = "₹#,##0.00"
+            det_row += 1
 
-    for idx, row_data in enumerate(compiled_data, 2):
-        ws2.cell(row=idx, column=1, value=row_data["Bill No"])
-        ws2.cell(row=idx, column=2, value=row_data["Date"])
-        ws2.cell(row=idx, column=3, value=row_data["Item (Hindi)"])
-        ws2.cell(row=idx, column=4, value=row_data["Item (English)"])
-        ws2.cell(row=idx, column=5, value=row_data["Qty (Kg)"]).number_format = "#,##0.0"
-        ws2.cell(row=idx, column=6, value=row_data["Rate"]).number_format = "₹#,##0"
-        ws2.cell(row=idx, column=7, value=f"=E{idx}*F{idx}").number_format = "₹#,##0"
-        for c in range(1, 8):
-            cell = ws2.cell(row=idx, column=c)
-            cell.font = font_regular
-            cell.border = border_all
-            if idx % 2 == 1:
-                cell.fill = fill_zebra
-
-    for ws in [ws1, ws2]:
-        for col in ws.columns:
-            max_len = 0
-            col_letter = get_column_letter(col[0].column)
-            for cell in col:
-                if cell.value and not str(cell.value).startswith("="):
-                    max_len = max(max_len, len(str(cell.value)))
-            ws.column_dimensions[col_letter].width = max(max_len + 4, 15)
-
-    ws1.column_dimensions["A"].width = 22
-    ws1.column_dimensions["B"].width = 25
-
+    _auto_widths(ws1)
+    _auto_widths(ws2)
     wb.save(buffer)
     buffer.seek(0)
     return buffer.getvalue()
@@ -812,7 +847,11 @@ def render_upload_module():
     tabs = st.tabs(["📷 Scan / Upload", "🕘 History", "⚙️ Settings"])
 
     with tabs[0]:
-        st.session_state.selected_provider = st.selectbox("Select OCR Provider", PROVIDERS, index=PROVIDERS.index(st.session_state.get("selected_provider", "Gemini")))
+        st.session_state.selected_provider = st.selectbox(
+            "Select OCR Provider",
+            PROVIDERS,
+            index=PROVIDERS.index(st.session_state.get("selected_provider", "Gemini")),
+        )
 
         uploaded_files = st.file_uploader("Upload Bill Images or PDFs", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
 
@@ -826,7 +865,12 @@ def render_upload_module():
             st.session_state.processed_files = set()
             st.rerun()
 
-        model_bundle = {"vision_client": setup_google_vision(), "gemini": setup_gemini(), "perplexity": setup_perplexity(), "openai": setup_openai()}
+        model_bundle = {
+            "vision_client": setup_google_vision(),
+            "gemini": setup_gemini(),
+            "perplexity": setup_perplexity(),
+            "openai": setup_openai(),
+        }
 
         if uploaded_files and process_now:
             all_results = []
@@ -870,7 +914,7 @@ def render_upload_module():
                 st.download_button(
                     "📥 Download Excel Report",
                     data=build_excel_export(all_results),
-                    file_name="Shri_Bala_Ji_Dairy_Bill_Summary.xlsx",
+                    file_name="Geeta_Fruit_Vegetables_Suppliers_Bill_Summary.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
 
