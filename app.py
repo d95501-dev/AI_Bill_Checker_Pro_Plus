@@ -151,7 +151,6 @@ def login_screen():
     st.markdown('<div class="login-wrap">', unsafe_allow_html=True)
     st.markdown('<div class="login-title">🔐 System Login</div>', unsafe_allow_html=True)
     st.markdown('<div class="login-sub">Secure access for AI bill dashboard</div>', unsafe_allow_html=True)
-
     username = st.text_input("Username")
     password = st.text_input("Password", type="password")
     if st.button("Login Server", use_container_width=True, key="login_btn"):
@@ -173,26 +172,26 @@ def logout():
 
 
 def apply_theme_css():
-    if st.session_state.get("theme_mode", "light") == "dark":
-        st.markdown("""
-            <style>
-            .stApp { background: #0b1220; color: #e5e7eb; }
-            section[data-testid="stSidebar"] { background: #0f172a; }
-            section[data-testid="stSidebar"] * { color: #f8fafc !important; }
-            </style>
-        """, unsafe_allow_html=True)
-    else:
-        st.markdown("""
-            <style>
-            .stApp { background: #f8fafc; color: #0f172a; }
-            section[data-testid="stSidebar"] { background: #0f172a; }
-            section[data-testid="stSidebar"] * { color: #f8fafc !important; }
-            </style>
-        """, unsafe_allow_html=True)
+    dark = st.session_state.get("theme_mode", "light") == "dark"
+    bg = "#0b1220" if dark else "#f8fafc"
+    sidebar = "#0f172a" if dark else "#0f172a"
+    text = "#e5e7eb" if dark else "#0f172a"
+    sidebar_text = "#f8fafc"
+    st.markdown(
+        f"""
+        <style>
+        .stApp {{ background: {bg}; color: {text}; }}
+        section[data-testid="stSidebar"] {{ background: {sidebar}; }}
+        section[data-testid="stSidebar"] * {{ color: {sidebar_text} !important; }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def apply_css():
-    st.markdown("""
+    st.markdown(
+        """
         <style>
         .stApp {
             background: radial-gradient(circle at top left, #ffffff 0%, #eef2ff 45%, #e2e8f0 100%);
@@ -263,17 +262,22 @@ def apply_css():
             padding: 12px 22px !important;
         }
         </style>
-    """, unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def metric_card(label, value, sub=""):
-    st.markdown(f"""
+    st.markdown(
+        f"""
         <div class="metric-card">
             <div class="metric-label">{label}</div>
             <div class="metric-value">{value}</div>
             <div class="metric-sub">{sub}</div>
         </div>
-    """, unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def render_metrics(df):
@@ -281,7 +285,6 @@ def render_metrics(df):
     matched = int((df["status"] == "Matched").sum()) if total_files else 0
     mismatch = int((df["status"] == "Mismatch").sum()) if total_files else 0
     review = int((df["status"] == "Needs Review").sum()) if total_files else 0
-
     c1, c2, c3, c4 = st.columns(4)
     with c1:
         metric_card("Files Processed", total_files, "Uploaded this session")
@@ -339,7 +342,8 @@ def parse_json_from_response(response_text):
 
 def safe_float(value):
     try:
-        return float(str(value).replace(",", "").strip())
+        clean_val = str(value).replace(",", "").replace("/", "").replace("-", "").strip()
+        return float(clean_val)
     except Exception:
         return 0.0
 
@@ -350,105 +354,32 @@ def normalize_items(items):
     cleaned = []
     for it in items:
         if isinstance(it, dict):
-            cleaned.append({
-                "name": it.get("name") or "",
-                "qty": it.get("qty") or "",
-                "rate": it.get("rate") or "",
-                "amount": it.get("amount") or ""
-            })
+            cleaned.append({"name": it.get("name") or "", "qty": it.get("qty") or "", "rate": it.get("rate") or "", "amount": it.get("amount") or ""})
     return cleaned
-
-
-def heuristic_extract_items(text):
-    items = []
-    for ln in [x.strip() for x in (text or "").splitlines() if x.strip()]:
-        if re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
-            continue
-        m = re.match(r"(.+?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$", ln)
-        if m:
-            items.append({"name": m.group(1).strip(), "qty": m.group(2), "rate": m.group(3), "amount": m.group(4)})
-    return items[:30]
-
-
-def heuristic_parse_from_text(text):
-    text = (text or "").strip()
-    if not text:
-        return OCRResult(None, None, None, [], 0.0, "")
-
-    lines = [x.strip() for x in text.splitlines() if x.strip()]
-    shop_name = None
-    for ln in lines[:12]:
-        if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
-            shop_name = ln[:80]
-            break
-
-    gst_number = None
-    bill_date = None
-    total = None
-
-    for p in [
-        r"\bGSTIN[:\s-]*([0-9A-Z]{15})\b",
-        r"\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z])\b",
-    ]:
-        m = re.search(p, text, re.I)
-        if m:
-            gst_number = m.group(1)
-            break
-
-    for p in [
-        r"\b(\d{2}[/-]\d{2}[/-]\d{2,4})\b",
-        r"\b(\d{4}[/-]\d{2}[/-]\d{2})\b",
-        r"\b(\d{2}\s+[A-Za-z]{3,9}\s+\d{2,4})\b",
-    ]:
-        m = re.search(p, text)
-        if m:
-            bill_date = m.group(1)
-            break
-
-    for p in [
-        r"\bGrand Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
-        r"\bNet Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
-        r"\bTotal[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
-        r"\bAmount[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
-        r"\bBill Amount[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
-    ]:
-        m = re.search(p, text, re.I)
-        if m:
-            total = m.group(1)
-            break
-
-    if not shop_name:
-        for ln in lines:
-            if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax|phone|mobile|email)\b", ln, re.I):
-                shop_name = ln[:80]
-                break
-
-    return OCRResult(
-        shop_name=shop_name,
-        bill_date=bill_date,
-        gst_number=gst_number,
-        items=heuristic_extract_items(text),
-        total=safe_float(total or 0),
-        raw_text=text,
-    )
 
 
 def build_schema_prompt():
     return """
-You are a document extraction specialist.
+You are an expert document extraction specialist specializing in handwritten Indian market bills.
+The input image contains multiple sequential or side-by-side cash/credit memo slips from "GEETA FRUIT & VEGETABLES SUPPLIERS".
+
+Extract ALL data from ALL visible slips combined into a single flat JSON object using the schema below.
+
 Return ONLY valid JSON:
 {
-  "shop_name": null or string,
-  "bill_date": null or string,
-  "gst_number": null or string,
+  "shop_name": "GEETA FRUIT & VEGETABLES SUPPLIERS",
+  "bill_date": string,
+  "gst_number": string or null,
   "items": [{"name": string, "qty": string, "rate": string, "amount": string}],
-  "total": null or string
+  "total": string
 }
-Rules:
-- Use visible text only.
-- If missing, return null.
-- No markdown.
-- No explanation.
+
+Strict Rules:
+1. shop_name: Always set explicitly to "GEETA FRUIT & VEGETABLES SUPPLIERS".
+2. bill_date: Detect the dates on the slips and return the most prominent date in YYYY-MM-DD format.
+3. items: Aggregate EVERY single item entry from ALL visible slips into this single flat array. Clean item names from handwritten noise. Clean qty, rate, and amount to numeric strings only.
+4. total: Calculate the cumulative sum of all visible slip totals and ensure it matches the item amounts.
+5. No markdown or explanation. Return clean JSON only.
 """
 
 
@@ -502,18 +433,15 @@ def normalize_result(data, fallback_text=""):
         data = {}
     raw_text = str(data.get("raw_text") or fallback_text or "").strip()
     parsed = heuristic_parse_from_text(raw_text) if raw_text else None
-
     if parsed:
         for k in ["shop_name", "bill_date", "gst_number", "items", "total"]:
             if not data.get(k):
                 data[k] = getattr(parsed, k)
-
     if not data.get("shop_name") and raw_text:
         for ln in [x.strip() for x in raw_text.splitlines() if x.strip()][:15]:
             if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax|phone|mobile|email)\b", ln, re.I):
                 data["shop_name"] = ln[:80]
                 break
-
     if not data.get("bill_date"):
         data["bill_date"] = datetime.now().strftime("%Y-%m-%d")
     if not data.get("gst_number"):
@@ -522,17 +450,60 @@ def normalize_result(data, fallback_text=""):
         data["items"] = []
     if not data.get("total"):
         data["total"] = "0"
-
     data["raw_text"] = raw_text
     return data
 
 
+def heuristic_extract_items(text):
+    items = []
+    for ln in [x.strip() for x in (text or "").splitlines() if x.strip()]:
+        if re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
+            continue
+        m = re.match(r"(.+?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$", ln)
+        if m:
+            items.append({"name": m.group(1).strip(), "qty": m.group(2), "rate": m.group(3), "amount": m.group(4)})
+    return items[:30]
+
+
+def heuristic_parse_from_text(text):
+    text = (text or "").strip()
+    if not text:
+        return OCRResult(None, None, None, [], 0.0, "")
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    shop_name = None
+    for ln in lines[:12]:
+        if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
+            shop_name = ln[:80]
+            break
+    gst_number = None
+    bill_date = None
+    total = None
+    for p in [r"\bGSTIN[:\s-]*([0-9A-Z]{15})\b", r"\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z])\b"]:
+        m = re.search(p, text, re.I)
+        if m:
+            gst_number = m.group(1)
+            break
+    for p in [r"\b(\d{2}[/-]\d{2}[/-]\d{2,4})\b", r"\b(\d{4}[/-]\d{2}[/-]\d{2})\b", r"\b(\d{2}\s+[A-Za-z]{3,9}\s+\d{2,4})\b"]:
+        m = re.search(p, text)
+        if m:
+            bill_date = m.group(1)
+            break
+    for p in [r"\bGrand Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b", r"\bNet Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b", r"\bTotal[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b", r"\bAmount[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b", r"\bBill Amount[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b"]:
+        m = re.search(p, text, re.I)
+        if m:
+            total = m.group(1)
+            break
+    if not shop_name:
+        for ln in lines:
+            if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax|phone|mobile|email)\b", ln, re.I):
+                shop_name = ln[:80]
+                break
+    return OCRResult(shop_name, bill_date, gst_number, heuristic_extract_items(text), safe_float(total or 0), text)
+
+
 def try_gemini(model, image):
     try:
-        resp = model.generate_content(
-            [build_schema_prompt(), image],
-            generation_config={"temperature": 0, "response_mime_type": "application/json"},
-        )
+        resp = model.generate_content([build_schema_prompt(), image], generation_config={"temperature": 0, "response_mime_type": "application/json"})
         data = parse_json_from_response(getattr(resp, "text", ""))
         st.session_state.gemini_available = True
         st.session_state.last_gemini_error_time = None
@@ -594,7 +565,6 @@ def analyze_with_auto_fallback(model_bundle, image, forced=None):
     order = PROVIDERS[:]
     if forced in order:
         order = [forced] + [x for x in order if x != forced]
-
     for provider in order:
         try:
             if provider == "Gemini" and model_bundle.get("gemini") and can_try_gemini():
@@ -611,7 +581,6 @@ def analyze_with_auto_fallback(model_bundle, image, forced=None):
                 return try_openai(model_bundle["openai"], image)
         except Exception:
             continue
-
     return normalize_result(heuristic_parse_from_text("").__dict__, "")
 
 
@@ -644,7 +613,6 @@ def build_batch_summary(results):
         total = safe_float(d.get("total", 0))
         shop = str(d.get("shop_name") or "").strip()
         bill_date = str(d.get("bill_date") or "").strip()
-
         if not shop and raw_text:
             for ln in [x.strip() for x in raw_text.splitlines() if x.strip()][:10]:
                 if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
@@ -654,7 +622,6 @@ def build_batch_summary(results):
             shop = "Unknown Shop"
         if not bill_date:
             bill_date = datetime.now().strftime("%Y-%m-%d")
-
         status = "Needs Review" if total <= 0 else ("Matched" if abs(calc_total - total) < 1 else "Mismatch")
         rows.append({
             "page": item.get("page"),
@@ -668,7 +635,6 @@ def build_batch_summary(results):
             "status": status,
         })
         insert_bill(shop, bill_date, d.get("gst_number") or "N/A", total, calc_total, status)
-
     return pd.DataFrame(rows)
 
 
@@ -677,13 +643,7 @@ def make_share_text(df=None):
     matched = int((df["status"] == "Matched").sum()) if total else 0
     mismatch = int((df["status"] == "Mismatch").sum()) if total else 0
     review = int((df["status"] == "Needs Review").sum()) if total else 0
-    return (
-        f"{APP_TITLE}\n"
-        f"Files Processed: {total}\n"
-        f"Matched: {matched}\n"
-        f"Mismatch: {mismatch}\n"
-        f"Needs Review: {review}"
-    )
+    return f"{APP_TITLE}\nFiles Processed: {total}\nMatched: {matched}\nMismatch: {mismatch}\nNeeds Review: {review}"
 
 
 def share_whatsapp(text):
@@ -699,13 +659,7 @@ def share_email(text, subject="Bill Dashboard Report"):
 
 
 def render_theme_toggle(location="main"):
-    mode = st.radio(
-        "Theme",
-        ["light", "dark"],
-        horizontal=True,
-        index=0 if st.session_state.get("theme_mode", "light") == "light" else 1,
-        key=f"theme_radio_{location}",
-    )
+    mode = st.radio("Theme", ["light", "dark"], horizontal=True, index=0 if st.session_state.get("theme_mode", "light") == "light" else 1, key=f"theme_radio_{location}")
     if mode != st.session_state.get("theme_mode", "light"):
         st.session_state["theme_mode"] = mode
         st.rerun()
@@ -714,7 +668,6 @@ def render_theme_toggle(location="main"):
 def build_excel_export(results):
     buffer = BytesIO()
     wb = openpyxl.Workbook()
-
     ws1 = wb.active
     ws1.title = "Summary Dashboard"
     ws1.views.sheetView[0].showGridLines = True
@@ -739,7 +692,6 @@ def build_excel_export(results):
     ws1["A1"].font = font_title
     ws1["A2"] = "Client: Director, NIT Kurukshetra (K.K.R.) | Period: April 2026"
     ws1["A2"].font = Font(name="Calibri", size=11, italic=True)
-
     ws1["A4"] = "1. Statement / Bill-wise Breakdown"
     ws1["A4"].font = font_section
 
@@ -750,22 +702,13 @@ def build_excel_export(results):
         c.fill = fill_header
         c.alignment = Alignment(horizontal="center", vertical="center")
 
-    bill_summaries = [
-        (705, "09/04/26 - 13/04/26", 4142),
-        (707, "19/04/26 - 21/04/26", 2856),
-        (708, "22/04/26 - 24/04/26", 1778),
-        (739, "25/04/26 - 28/04/26", 2568),
-        (710, "29/04/26 - 30/04/26", 1432),
-    ]
-
+    bill_summaries = [(705, "09/04/26 - 13/04/26", 4142), (707, "19/04/26 - 21/04/26", 2856), (708, "22/04/26 - 24/04/26", 1778), (739, "25/04/26 - 28/04/26", 2568), (710, "29/04/26 - 30/04/26", 1432)]
     for idx, (b_no, period, orig_total) in enumerate(bill_summaries, 6):
         ws1.cell(row=idx, column=1, value=b_no)
         ws1.cell(row=idx, column=2, value=period)
-        c_orig = ws1.cell(row=idx, column=3, value=orig_total)
-        c_orig.number_format = "₹#,##0"
-        c_calc = ws1.cell(row=idx, column=4, value=f"=SUMIF('Detailed Transactions'!A:A, A{idx}, 'Detailed Transactions'!G:G)")
-        c_calc.number_format = "₹#,##0"
-        c_status = ws1.cell(row=idx, column=5, value=f'=IF(C{idx}=D{idx}, "Verified Matched", "Mismatch")')
+        ws1.cell(row=idx, column=3, value=orig_total).number_format = "₹#,##0"
+        ws1.cell(row=idx, column=4, value=f"=SUMIF('Detailed Transactions'!A:A, A{idx}, 'Detailed Transactions'!G:G)").number_format = "₹#,##0"
+        ws1.cell(row=idx, column=5, value=f'=IF(C{idx}=D{idx}, "Verified Matched", "Mismatch")')
         for c in range(1, 6):
             cell = ws1.cell(row=idx, column=c)
             cell.font = font_regular
@@ -789,16 +732,12 @@ def build_excel_export(results):
         c.fill = fill_header
         c.alignment = Alignment(horizontal="center", vertical="center")
 
-    products = [("Milk", "दूध"), ("Curd", "दही"), ("Paneer", "पनीर")]
-    for idx, (eng, hin) in enumerate(products, 16):
+    for idx, (eng, hin) in enumerate([("Milk", "दूध"), ("Curd", "दही"), ("Paneer", "पनीर")], 16):
         ws1.cell(row=idx, column=1, value=eng)
         ws1.cell(row=idx, column=2, value=hin)
-        c_qty = ws1.cell(row=idx, column=3, value=f"=SUMIF('Detailed Transactions'!D:D, A{idx}, 'Detailed Transactions'!E:E)")
-        c_rate = ws1.cell(row=idx, column=4, value=f"=AVERAGEIF('Detailed Transactions'!D:D, A{idx}, 'Detailed Transactions'!F:F)")
-        c_amt = ws1.cell(row=idx, column=5, value=f"=SUMIF('Detailed Transactions'!D:D, A{idx}, 'Detailed Transactions'!G:G)")
-        c_qty.number_format = "#,##0.0"
-        c_rate.number_format = "₹#,##0"
-        c_amt.number_format = "₹#,##0"
+        ws1.cell(row=idx, column=3, value=f"=SUMIF('Detailed Transactions'!D:D, A{idx}, 'Detailed Transactions'!E:E)").number_format = "#,##0.0"
+        ws1.cell(row=idx, column=4, value=f"=AVERAGEIF('Detailed Transactions'!D:D, A{idx}, 'Detailed Transactions'!F:F)").number_format = "₹#,##0"
+        ws1.cell(row=idx, column=5, value=f"=SUMIF('Detailed Transactions'!D:D, A{idx}, 'Detailed Transactions'!G:G)").number_format = "₹#,##0"
         for c in range(1, 6):
             cell = ws1.cell(row=idx, column=c)
             cell.font = font_regular
@@ -821,9 +760,6 @@ def build_excel_export(results):
         {"Bill No": 705, "Date": "2026-04-09", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 8.0, "Rate": 58},
         {"Bill No": 705, "Date": "2026-04-09", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 8.0, "Rate": 60},
         {"Bill No": 705, "Date": "2026-04-09", "Item (Hindi)": "पनीर", "Item (English)": "Paneer", "Qty (Kg)": 3.5, "Rate": 300},
-        {"Bill No": 705, "Date": "2026-04-11", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 2.0, "Rate": 58},
-        {"Bill No": 705, "Date": "2026-04-11", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 4.0, "Rate": 60},
-        {"Bill No": 705, "Date": "2026-04-11", "Item (Hindi)": "पनीर", "Item (English)": "Paneer", "Qty (Kg)": 2.0, "Rate": 300},
     ]
 
     for idx, row_data in enumerate(compiled_data, 2):
@@ -859,7 +795,8 @@ def build_excel_export(results):
 
 
 def render_upload_module():
-    st.markdown("""
+    st.markdown(
+        """
         <div class="deep-csc-header">
             <div class="branding-text">
                 <h1>🧾 AI Multi-Bill OCR Processor</h1>
@@ -868,22 +805,16 @@ def render_upload_module():
             <div class="csc-meta-badge">📍 <b>Deep CSC</b><br>👤 Owner: Deepak | ID: 256423250015</div>
             <div class="branding-badge">Deep CSC AI</div>
         </div>
-    """, unsafe_allow_html=True)
+        """,
+        unsafe_allow_html=True,
+    )
 
     tabs = st.tabs(["📷 Scan / Upload", "🕘 History", "⚙️ Settings"])
 
     with tabs[0]:
-        st.session_state.selected_provider = st.selectbox(
-            "Select OCR Provider",
-            PROVIDERS,
-            index=PROVIDERS.index(st.session_state.get("selected_provider", "Gemini")),
-        )
+        st.session_state.selected_provider = st.selectbox("Select OCR Provider", PROVIDERS, index=PROVIDERS.index(st.session_state.get("selected_provider", "Gemini")))
 
-        uploaded_files = st.file_uploader(
-            "Upload Bill Images or PDFs",
-            type=["jpg", "jpeg", "png", "pdf"],
-            accept_multiple_files=True,
-        )
+        uploaded_files = st.file_uploader("Upload Bill Images or PDFs", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
 
         c1, c2 = st.columns(2)
         with c1:
@@ -895,12 +826,7 @@ def render_upload_module():
             st.session_state.processed_files = set()
             st.rerun()
 
-        model_bundle = {
-            "vision_client": setup_google_vision(),
-            "gemini": setup_gemini(),
-            "perplexity": setup_perplexity(),
-            "openai": setup_openai(),
-        }
+        model_bundle = {"vision_client": setup_google_vision(), "gemini": setup_gemini(), "perplexity": setup_perplexity(), "openai": setup_openai()}
 
         if uploaded_files and process_now:
             all_results = []
@@ -908,8 +834,8 @@ def render_upload_module():
                 file_key = f"{uploaded_file.name}_{uploaded_file.size}"
                 if file_key in st.session_state.processed_files:
                     continue
-
                 file_bytes = uploaded_file.getvalue()
+
                 if uploaded_file.name.lower().endswith(".pdf"):
                     try:
                         pages = convert_pdf_to_images(file_bytes)
@@ -928,7 +854,6 @@ def render_upload_module():
             if all_results:
                 df = build_batch_summary(all_results)
                 render_metrics(df)
-
                 st.markdown('<div class="section-card">', unsafe_allow_html=True)
                 st.dataframe(df, use_container_width=True)
                 st.markdown("</div>", unsafe_allow_html=True)
@@ -942,42 +867,26 @@ def render_upload_module():
                 with s3:
                     st.link_button("📧 Share by Email", share_email(summary_text), use_container_width=True)
 
-                excel_data = build_excel_export(all_results)
                 st.download_button(
                     "📥 Download Excel Report",
-                    data=excel_data,
+                    data=build_excel_export(all_results),
                     file_name="Shri_Bala_Ji_Dairy_Bill_Summary.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
 
     with tabs[1]:
         st.subheader("Processing History")
-        history_df = get_history_df()
-        st.dataframe(history_df, use_container_width=True)
+        st.dataframe(get_history_df(), use_container_width=True)
 
     with tabs[2]:
         st.markdown('<div class="section-card">', unsafe_allow_html=True)
         render_theme_toggle("settings")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-
-def render_theme_toggle(location="main"):
-    mode = st.radio(
-        "Theme",
-        ["light", "dark"],
-        horizontal=True,
-        index=0 if st.session_state.get("theme_mode", "light") == "light" else 1,
-        key=f"theme_radio_{location}",
-    )
-    if mode != st.session_state.get("theme_mode", "light"):
-        st.session_state["theme_mode"] = mode
-        st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_app():
     apply_theme_css()
     apply_css()
-
     if not st.session_state.logged_in:
         login_screen()
     else:
