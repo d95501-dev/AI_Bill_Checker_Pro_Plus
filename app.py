@@ -330,7 +330,8 @@ def convert_pdf_to_images(file_bytes):
 
 
 def parse_json_from_response(response_text):
-    raw = (response_text or "").strip().replace("```json", "").replace("```", "").strip()
+    raw = (response_text or "").strip().replace("```json", "").replace("
+```", "").strip()
     m = re.search(r"\{.*\}", raw, re.DOTALL)
     if m:
         raw = m.group(0)
@@ -893,109 +894,101 @@ def render_upload_module():
             clear_state = st.button("Clear Uploaded / Processed Files", use_container_width=True)
 
         if clear_state:
+            if "current_batch_df" in st.session_state:
+                del st.session_state["current_batch_df"]
             st.session_state.processed_files = set()
+            st.success("Cleared all uploaded data cache.")
             st.rerun()
 
-        model_bundle = {
-            "vision_client": setup_google_vision(),
-            "gemini": setup_gemini(),
-            "perplexity": setup_perplexity(),
-            "openai": setup_openai(),
-        }
+        # FIXED CORE FUNCTIONALITY: Robust iteration across multiple files and pages
+        if process_now and uploaded_files:
+            model_bundle = {
+                "gemini": setup_gemini(),
+                "openai": setup_openai(),
+                "perplexity": setup_perplexity(),
+                "vision_client": setup_google_vision()
+            }
 
-        if uploaded_files and process_now:
-            all_results = []
-            for uploaded_file in uploaded_files:
-                file_key = f"{uploaded_file.name}_{uploaded_file.size}"
-                if file_key in st.session_state.processed_files:
-                    continue
-
-                file_bytes = uploaded_file.getvalue()
-                if uploaded_file.name.lower().endswith(".pdf"):
-                    try:
-                        pages = convert_pdf_to_images(file_bytes)
-                        for i, img in enumerate(pages):
+            results = []
+            progress_bar = st.progress(0.0)
+            status_text = st.empty()
+            
+            total_files = len(uploaded_files)
+            
+            for f_idx, file in enumerate(uploaded_files):
+                status_text.markdown(f"⏳ Processing item {f_idx + 1}/{total_files}: **{file.name}**")
+                file_bytes = file.read()
+                
+                try:
+                    # Multi-page PDF handling
+                    if file.name.lower().endswith('.pdf'):
+                        images = convert_pdf_to_images(file_bytes)
+                        for p_idx, img in enumerate(images):
+                            status_text.markdown(f"⏳ Extracting data from **{file.name}** (Page {p_idx + 1}/{len(images)})...")
                             data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
-                            all_results.append({"page": i + 1, "source": uploaded_file.name, "data": data})
-                    except Exception as e:
-                        st.error(f"Error processing {uploaded_file.name}: {e}")
-                else:
-                    img = Image.open(BytesIO(file_bytes)).convert("RGB")
-                    data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
-                    all_results.append({"page": 1, "source": uploaded_file.name, "data": data})
+                            results.append({
+                                "page": p_idx + 1,
+                                "source": file.name,
+                                "data": data
+                            })
+                    # Image processing loop
+                    else:
+                        img = Image.open(BytesIO(file_bytes)).convert("RGB")
+                        data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
+                        results.append({
+                            "page": 1,
+                            "source": file.name,
+                            "data": data
+                        })
+                except Exception as e:
+                    st.error(f"Failed parsing details for {file.name}: {str(e)}")
+                
+                progress_bar.progress((f_idx + 1) / total_files)
+            
+            status_text.markdown("✅ **Batch Processing Completed!**")
+            
+            if results:
+                batch_df = build_batch_summary(results)
+                st.session_state["current_batch_df"] = batch_df
+                st.rerun()
 
-                st.session_state.processed_files.add(file_key)
-
-            if all_results:
-                df = build_batch_summary(all_results)
-                render_metrics(df)
-
-                st.markdown('<div class="section-card">', unsafe_allow_html=True)
-                st.dataframe(df, use_container_width=True)
-                st.markdown("</div>", unsafe_allow_html=True)
-
-                summary_text = make_share_text(df)
-                s1, s2, s3 = st.columns(3)
-                with s1:
-                    st.link_button("📱 Share on WhatsApp", share_whatsapp(summary_text), use_container_width=True)
-                with s2:
-                    st.link_button("✈️ Share on Telegram", share_telegram(summary_text), use_container_width=True)
-                with s3:
-                    st.link_button("📧 Share by Email", share_email(summary_text), use_container_width=True)
-
-                excel_data = build_excel_export(all_results)
-                st.download_button(
-                    "📥 Download Excel Report",
-                    data=excel_data,
-                    file_name="Shri_Bala_Ji_Dairy_Bill_Summary.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                )
+        # Render Batch Dashboard Results Dynamically
+        if "current_batch_df" in st.session_state:
+            df = st.session_state["current_batch_df"]
+            st.markdown("---")
+            st.markdown("### 📊 Active Batch Metrics")
+            render_metrics(df)
+            
+            st.markdown("### 📑 Processed Document Breakdown")
+            st.dataframe(df, use_container_width=True)
 
     with tabs[1]:
-        st.subheader("Processing History")
+        st.markdown("### 🏛️ Complete Database Log")
         history_df = get_history_df()
-        st.dataframe(history_df, use_container_width=True)
+        if not history_df.empty:
+            st.dataframe(history_df, use_container_width=True)
+        else:
+            st.info("No invoice logs captured inside the database yet.")
 
     with tabs[2]:
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        render_theme_toggle("settings")
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown("### ⚙️ System Profiles")
+        render_theme_toggle(location="tab")
 
 
-def render_theme_toggle(location="main"):
-    mode = st.radio(
-        "Theme",
-        ["light", "dark"],
-        horizontal=True,
-        index=0 if st.session_state.get("theme_mode", "light") == "light" else 1,
-        key=f"theme_radio_{location}",
-    )
-    if mode != st.session_state.get("theme_mode", "light"):
-        st.session_state["theme_mode"] = mode
-        st.rerun()
-
-
-def render_app():
+# Main Application Entrypoint Execution Pipeline
+if __name__ == "__main__":
+    setup_page()
+    init_state()
+    init_db()
     apply_theme_css()
     apply_css()
 
-    if not st.session_state.logged_in:
+    if not st.session_state.get("logged_in", False):
         login_screen()
     else:
         with st.sidebar:
-            st.markdown("### Controls")
+            st.title("Settings Pane")
+            render_theme_toggle(location="sidebar")
             if st.button("Logout", use_container_width=True):
                 logout()
-            render_theme_toggle("sidebar")
         render_upload_module()
-
-
-def main():
-    setup_page()
-    init_db()
-    init_state()
-    render_app()
-
-
-if __name__ == "__main__":
-    main()
