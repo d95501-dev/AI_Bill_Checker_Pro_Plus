@@ -906,4 +906,225 @@ def build_excel_export(results):
                 a_cell.alignment = Alignment(horizontal="right")
                 
                 for c in range(1, 8):
-                    cell = ws2.cell(row=det_
+                    cell = ws2.cell(row=det_row, column=c)
+                    cell.font = font_regular
+                    cell.border = border_all
+                    if det_row % 2 == 1:
+                        cell.fill = fill_zebra
+                det_row += 1
+
+    # ऑटो कॉलम विड्थ एडजस्टमेंट
+    for ws in [ws1, ws2]:
+        for col in ws.columns:
+            max_len = 0
+            col_letter = get_column_letter(col[0].column)
+            for cell in col:
+                if cell.value:
+                    val_str = str(cell.value)
+                    if not val_str.startswith("="):
+                        max_len = max(max_len, len(val_str))
+            ws.column_dimensions[col_letter].width = max(max_len + 4, 15)
+
+    wb.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def build_batch_summary(results):
+    rows = []
+    for item in results:
+        d = item.get("data")
+        if d:
+            raw_text = str(d.get("raw_text") or "").strip()
+            items = normalize_items(d.get("items"))
+            tmp_df = pd.DataFrame(items)
+            calc_total = float(pd.to_numeric(tmp_df["amount"], errors="coerce").fillna(0).sum()) if not tmp_df.empty else 0.0
+            total = safe_float(d.get("total", 0))
+            shop = str(d.get("shop_name") or "").strip()
+            bill_date = str(d.get("bill_date") or "").strip()
+            if not shop and raw_text:
+                for ln in [x.strip() for x in raw_text.splitlines() if x.strip()][:10]:
+                    if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
+                        shop = ln[:80]
+                        break
+            if not shop:
+                shop = "Unknown Shop"
+            if not bill_date:
+                bill_date = datetime.now().strftime("%Y-%m-%d")
+            status = "Needs Review" if total <= 0 else ("Matched" if abs(calc_total - total) < 1 else "Mismatch")
+            rows.append({
+                "page": item.get("page"),
+                "source": item.get("source"),
+                "shop_name": shop,
+                "bill_date": bill_date,
+                "gst_number": d.get("gst_number") or "N/A",
+                "bill_total": total,
+                "calculated_total": calc_total,
+                "difference": abs(calc_total - total),
+                "status": status
+            })
+        else:
+            rows.append({
+                "page": item.get("page"),
+                "source": item.get("source"),
+                "shop_name": "Unknown Shop",
+                "bill_date": None,
+                "gst_number": None,
+                "bill_total": None,
+                "calculated_total": None,
+                "difference": None,
+                "status": f"Error: {item.get('error')}"
+            })
+    return pd.DataFrame(rows)
+
+def render_theme_toggle(location="main"):
+    mode = st.radio("Theme", ["light", "dark"], horizontal=True, index=0 if st.session_state.get("theme_mode", "light") == "light" else 1, key=f"theme_radio_{location}")
+    if mode != st.session_state.get("theme_mode", "light"):
+        st.session_state["theme_mode"] = mode
+        st.rerun()
+
+def make_share_text(df=None):
+    total = len(df) if df is not None and not df.empty else 0
+    matched = int((df["status"] == "Matched").sum()) if total else 0
+    mismatch = int((df["status"] == "Mismatch").sum()) if total else 0
+    review = int((df["status"] == "Needs Review").sum()) if total else 0
+
+    return (
+        f"{APP_TITLE}\n"
+        f"Files Processed: {total}\n"
+        f"Matched: {matched}\n"
+        f"Mismatch: {mismatch}\n"
+        f"Needs Review: {review}"
+    )
+
+def share_whatsapp(text):
+    return "https://wa.me/?text=" + urllib.parse.quote(text)
+
+def share_telegram(text):
+    return "https://t.me/share/url?url=&text=" + urllib.parse.quote(text)
+
+def share_email(text, subject="Bill Dashboard Report"):
+    return "mailto:?subject=" + urllib.parse.quote(subject) + "&body=" + urllib.parse.quote(text)
+
+def render_upload_module():
+    st.markdown("""
+        <div class="deep-csc-header">
+            <div class="branding-text">
+                <h1>🧾 AI Multi-Bill OCR Processor</h1>
+                <p>Automated structural data parsing pipeline powered by multiple providers.</p>
+            </div>
+            <div class="csc-meta-badge">📍 <b>Deep CSC</b><br>👤 Owner: Deepak | ID: 256423250015</div>
+            <div class="branding-badge">Deep CSC AI</div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    tabs = st.tabs(["📷 Scan / Upload", "🕘 History", "⚙️ Settings"])
+
+    with tabs[0]:
+        providers = ["Gemini", "Google Vision OCR", "Perplexity", "OpenAI"]
+        st.session_state.selected_provider = st.selectbox("Select OCR Provider", providers, index=providers.index("Gemini"), key="provider_selectbox")
+
+        uploaded_files = st.file_uploader(
+            "Upload Bill Images or PDFs",
+            type=["jpg", "jpeg", "png", "pdf"],
+            accept_multiple_files=True,
+            key="bill_uploader",
+        )
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            process_now = st.button("Process All Files", use_container_width=True)
+        with col_b:
+            clear_state = st.button("Clear Uploaded / Processed Files", use_container_width=True)
+
+        if clear_state:
+            st.session_state.processed_files = set()
+            st.rerun()
+
+        model_bundle = {
+            "vision_client": setup_google_vision(),
+            "gemini": setup_gemini(),
+            "perplexity": setup_perplexity(),
+            "openai": setup_openai(),
+        }
+
+        if uploaded_files and process_now:
+            all_results = []
+            for uploaded_file in uploaded_files:
+                file_key = f"{uploaded_file.name}_{uploaded_file.size}"
+                if file_key in st.session_state.processed_files:
+                    continue
+
+                file_bytes = uploaded_file.getvalue()
+                name_lower = uploaded_file.name.lower()
+
+                if name_lower.endswith(".pdf"):
+                    try:
+                        pages = convert_pdf_to_images(file_bytes)
+                        for i, img in enumerate(pages):
+                            data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
+                            all_results.append({"page": i + 1, "source": uploaded_file.name, "data": data})
+                    except Exception as e:
+                        st.error(f"Error processing {uploaded_file.name}: {e}")
+                else:
+                    img = Image.open(BytesIO(file_bytes)).convert("RGB")
+                    data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
+                    all_results.append({"page": 1, "source": uploaded_file.name, "data": data})
+
+                st.session_state.processed_files.add(file_key)
+
+            if all_results:
+                df = build_batch_summary(all_results)
+                render_metrics(df)
+                st.markdown('<div class="section-card">', unsafe_allow_html=True)
+                st.dataframe(df, use_container_width=True)
+                st.markdown('</div>', unsafe_allow_html=True)
+
+                summary_text = make_share_text(df)
+                s1, s2, s3 = st.columns(3)
+                with s1:
+                    st.link_button("📱 Share on WhatsApp", share_whatsapp(summary_text), use_container_width=True)
+                with s2:
+                    st.link_button("✈️ Share on Telegram", share_telegram(summary_text), use_container_width=True)
+                with s3:
+                    st.link_button("📧 Share by Email", share_email(summary_text), use_container_width=True)
+
+                excel_data = build_excel_export(all_results)
+                
+                # फाइल नेम को भी डायनेमिक बना दिया ताकि कन्फ्यूजन न हो
+                st.download_button(
+                    "📥 Download Excel Report",
+                    data=excel_data,
+                    file_name="AI_Processed_Bill_Summary.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
+        else:
+            st.info("Upload images or PDFs, then click Process All Files.")
+
+    with tabs[1]:
+        st.subheader("Processing History")
+        with sqlite3.connect(DB_PATH) as conn:
+            history_df = pd.read_sql_query("SELECT * FROM bills ORDER BY timestamp DESC", conn)
+        st.dataframe(history_df, use_container_width=True)
+
+    with tabs[2]:
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        render_theme_toggle("settings")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+def main():
+    setup_page()
+    init_db()
+    init_auth()
+    init_runtime_state()
+    apply_theme_css()
+    apply_css()
+
+    if not st.session_state.logged_in:
+        do_login()
+    else:
+        render_upload_module()
+        if st.sidebar.button("Logout"):
+            terminate_session()
+
+if __name__ == "__main__":
+    main()
