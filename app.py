@@ -741,6 +741,10 @@ def sanitize_sheet_name(name, fallback="Sheet"):
 def build_excel_export(results):
     buffer = BytesIO()
     wb = openpyxl.Workbook()
+    
+    # ----------------------------------------------------
+    # Sheet 1: Summary Dashboard
+    # ----------------------------------------------------
     ws1 = wb.active
     ws1.title = "Summary Dashboard"
     ws1.views.sheetView[0].showGridLines = True
@@ -763,378 +767,143 @@ def build_excel_export(results):
     border_all = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
     border_total = Border(top=Side(border_style="thin", color="000000"), bottom=Side(border_style="double", color="000000"))
 
-    ws1["A1"] = "SHRI BALA JI DAIRY - INVOICE SUMMARY & AUDIT"
+    # मुख्य टाइटल को डायनेमिक बनाना (पहले अपलोड किए गए बिल से दुकान का नाम उठाना)
+    main_shop_name = "AI PROCESSED BILLS"
+    if results and results[0].get("data") and results[0]["data"].get("shop_name"):
+        main_shop_name = results[0]["data"]["shop_name"].upper()
+
+    ws1["A1"] = f"{main_shop_name} - INVOICE SUMMARY & AUDIT"
     ws1["A1"].font = font_title
-    ws1["A2"] = "Client: Director, NIT Kurukshetra (K.K.R.) | Period: April 2026"
+    ws1["A2"] = f"Generated via Deep CSC AI | Date: {datetime.now().strftime('%d/%m/%Y')}"
     ws1["A2"].font = Font(name="Calibri", size=11, italic=True)
 
     ws1["A4"] = "1. Statement / Bill-wise Breakdown"
     ws1["A4"].font = font_section
 
-    headers_bill = ["Bill No.", "Period / Dates Covered", "Original Invoice Total", "Calculated Total", "Status / Audit"]
+    headers_bill = ["Bill No / S.No", "Shop Name", "Bill Date", "Original Invoice Total", "Calculated Total", "Status / Audit"]
     for col_num, h in enumerate(headers_bill, 1):
         cell = ws1.cell(row=5, column=col_num, value=h)
         cell.font = font_header
         cell.fill = fill_header
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    bill_summaries = [
-        (705, "09/04/26 - 13/04/26", 4142),
-        (707, "19/04/26 - 21/04/26", 2856),
-        (708, "22/04/26 - 24/04/26", 1778),
-        (739, "25/04/26 - 28/04/26", 2568),
-        (710, "29/04/26 - 30/04/26", 1432),
-    ]
-
-    for idx, (b_no, period, orig_total) in enumerate(bill_summaries, 6):
-        ws1.cell(row=idx, column=1, value=b_no).alignment = Alignment(horizontal="center")
-        ws1.cell(row=idx, column=2, value=period).alignment = Alignment(horizontal="left")
-        c_orig = ws1.cell(row=idx, column=3, value=orig_total)
-        c_orig.number_format = "₹#,##0"
+    # डायनेमिक बिल ब्रेकडाउन डेटा तैयार करना
+    current_row = 6
+    for idx, item in enumerate(results, 1):
+        d = item.get("data")
+        if not d:
+            continue
+        
+        shop = d.get("shop_name") or "Unknown Shop"
+        b_date = d.get("bill_date") or "N/A"
+        orig_total = safe_float(d.get("total", 0))
+        
+        # आइटमों की कुल राशि कैलकुलेट करना
+        items = normalize_items(d.get("items"))
+        calc_total = sum(safe_float(it.get("amount", 0)) for it in items)
+        
+        ws1.cell(row=current_row, column=1, value=idx).alignment = Alignment(horizontal="center")
+        ws1.cell(row=current_row, column=2, value=shop).alignment = Alignment(horizontal="left")
+        ws1.cell(row=current_row, column=3, value=b_date).alignment = Alignment(horizontal="center")
+        
+        c_orig = ws1.cell(row=current_row, column=4, value=orig_total)
+        c_orig.number_format = "₹#,##0.00"
         c_orig.alignment = Alignment(horizontal="right")
-        c_calc = ws1.cell(row=idx, column=4, value=f"=SUMIF('Detailed Transactions'!A:A, A{idx}, 'Detailed Transactions'!G:G)")
-        c_calc.number_format = "₹#,##0"
+        
+        # एक्सेल फॉर्मूला लगाना ताकि शीट 2 से लाइव सम कर सके
+        c_calc = ws1.cell(row=current_row, column=5, value=f"=SUMIF('Detailed Transactions'!A:A, A{current_row}, 'Detailed Transactions'!G:G)")
+        c_calc.number_format = "₹#,##0.00"
         c_calc.alignment = Alignment(horizontal="right")
-        c_status = ws1.cell(row=idx, column=5, value=f'=IF(C{idx}=D{idx}, "Verified Matched", "Mismatch")')
+        
+        c_status = ws1.cell(row=current_row, column=6, value=f'=IF(ABS(D{current_row}-E{current_row})<1, "Verified Matched", "Mismatch")')
         c_status.alignment = Alignment(horizontal="center")
-        for c in range(1, 6):
-            cell = ws1.cell(row=idx, column=c)
+        
+        for c in range(1, 7):
+            cell = ws1.cell(row=current_row, column=c)
             cell.font = font_regular
             cell.border = border_all
-            if idx % 2 == 1:
+            if current_row % 2 == 1:
                 cell.fill = fill_zebra
+        current_row += 1
 
-    tot_row = 11
-    ws1.cell(row=tot_row, column=1, value="Grand Total").font = font_bold
-    ws1.cell(row=tot_row, column=3, value="=SUM(C6:C10)").font = font_bold
-    ws1.cell(row=tot_row, column=3).number_format = "₹#,##0"
-    ws1.cell(row=tot_row, column=3).border = border_total
-    ws1.cell(row=tot_row, column=4, value="=SUM(D6:D10)").font = font_bold
-    ws1.cell(row=tot_row, column=4).number_format = "₹#,##0"
-    ws1.cell(row=tot_row, column=4).border = border_total
-
-    ws1["A14"] = "2. Product Consumption Summary"
-    ws1["A14"].font = font_section
-
-    headers_prod = ["Product Name (English)", "Product Name (Hindi)", "Total Qty Sold (Kg)", "Standard Rate (₹/Kg)", "Total Amount (₹)"]
-    for col_num, h in enumerate(headers_prod, 1):
-        cell = ws1.cell(row=15, column=col_num, value=h)
-        cell.font = font_header
-        cell.fill = fill_header
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-
-    products = [("Milk", "दूध"), ("Curd", "दही"), ("Paneer", "पनीर")]
-    for idx, (eng, hin) in enumerate(products, 16):
-        ws1.cell(row=idx, column=1, value=eng).alignment = Alignment(horizontal="left")
-        ws1.cell(row=idx, column=2, value=hin).alignment = Alignment(horizontal="left")
-        c_qty = ws1.cell(row=idx, column=3, value=f"=SUMIF('Detailed Transactions'!D:D, A{idx}, 'Detailed Transactions'!E:E)")
-        c_qty.number_format = "#,##0.0"
-        c_qty.alignment = Alignment(horizontal="right")
-        c_rate = ws1.cell(row=idx, column=4, value=f"=AVERAGEIF('Detailed Transactions'!D:D, A{idx}, 'Detailed Transactions'!F:F)")
-        c_rate.number_format = "₹#,##0"
-        c_rate.alignment = Alignment(horizontal="right")
-        c_amt = ws1.cell(row=idx, column=5, value=f"=SUMIF('Detailed Transactions'!D:D, A{idx}, 'Detailed Transactions'!G:G)")
-        c_amt.number_format = "₹#,##0"
-        c_amt.alignment = Alignment(horizontal="right")
-        for c in range(1, 6):
-            cell = ws1.cell(row=idx, column=c)
-            cell.font = font_regular
-            cell.border = border_all
-
-    ws1.cell(row=19, column=1, value="Total").font = font_bold
-    ws1.cell(row=19, column=5, value="=SUM(E16:E18)").font = font_bold
-    ws1.cell(row=19, column=5).number_format = "₹#,##0"
-    ws1.cell(row=19, column=5).border = border_total
-
+    # ग्रैंड टोटल रो
+    ws1.cell(row=current_row, column=1, value="Grand Total").font = font_bold
+    ws1.cell(row=current_row, column=4, value=f"=SUM(D6:D{current_row-1})").font = font_bold
+    ws1.cell(row=current_row, column=4).number_format = "₹#,##0.00"
+    ws1.cell(row=current_row, column=4).border = border_total
+    
+    ws1.cell(row=current_row, column=5, value=f"=SUM(E6:E{current_row-1})").font = font_bold
+    ws1.cell(row=current_row, column=5).number_format = "₹#,##0.00"
+    ws1.cell(row=current_row, column=5).border = border_total
+    
+    # ----------------------------------------------------
+    # Sheet 2: Detailed Transactions
+    # ----------------------------------------------------
     ws2 = wb.create_sheet(title="Detailed Transactions")
     ws2.views.sheetView[0].showGridLines = True
-    headers_det = ["Bill No", "Date", "Particulars (Hindi)", "Particulars (English)", "Qty (Kg)", "Rate (₹)", "Amount (₹)"]
+    
+    headers_det = ["Bill Index", "Date", "Shop Name", "Item Description", "Qty", "Rate", "Amount (₹)"]
     for col_num, h in enumerate(headers_det, 1):
         cell = ws2.cell(row=1, column=col_num, value=h)
         cell.font = font_header
         cell.fill = fill_header
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    compiled_data = [
-        {"Bill No": 705, "Date": "2026-04-09", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 8.0, "Rate": 58},
-        {"Bill No": 705, "Date": "2026-04-09", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 8.0, "Rate": 60},
-        {"Bill No": 705, "Date": "2026-04-09", "Item (Hindi)": "पनीर", "Item (English)": "Paneer", "Qty (Kg)": 3.5, "Rate": 300},
-        {"Bill No": 705, "Date": "2026-04-11", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 2.0, "Rate": 58},
-        {"Bill No": 705, "Date": "2026-04-11", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 4.0, "Rate": 60},
-        {"Bill No": 705, "Date": "2026-04-11", "Item (Hindi)": "पनीर", "Item (English)": "Paneer", "Qty (Kg)": 2.0, "Rate": 300},
-        {"Bill No": 705, "Date": "2026-04-13", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 4.0, "Rate": 58},
-        {"Bill No": 705, "Date": "2026-04-13", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 6.0, "Rate": 60},
-        {"Bill No": 705, "Date": "2026-04-13", "Item (Hindi)": "पनीर", "Item (English)": "Paneer", "Qty (Kg)": 2.0, "Rate": 300},
-        {"Bill No": 707, "Date": "2026-04-19", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 4.0, "Rate": 58},
-        {"Bill No": 707, "Date": "2026-04-19", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 3.0, "Rate": 60},
-        {"Bill No": 707, "Date": "2026-04-19", "Item (Hindi)": "पनीर", "Item (English)": "Paneer", "Qty (Kg)": 2.0, "Rate": 300},
-        {"Bill No": 707, "Date": "2026-04-20", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 4.0, "Rate": 58},
-        {"Bill No": 707, "Date": "2026-04-20", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 5.0, "Rate": 60},
-        {"Bill No": 707, "Date": "2026-04-20", "Item (Hindi)": "पनीर", "Item (English)": "Paneer", "Qty (Kg)": 2.0, "Rate": 300},
-        {"Bill No": 707, "Date": "2026-04-21", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 4.0, "Rate": 58},
-        {"Bill No": 707, "Date": "2026-04-21", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 3.0, "Rate": 60},
-        {"Bill No": 707, "Date": "2026-04-21", "Item (Hindi)": "पनीर", "Item (English)": "Paneer", "Qty (Kg)": 1.0, "Rate": 300},
-        {"Bill No": 708, "Date": "2026-04-22", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 4.0, "Rate": 58},
-        {"Bill No": 708, "Date": "2026-04-22", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 3.0, "Rate": 60},
-        {"Bill No": 708, "Date": "2026-04-22", "Item (Hindi)": "पनीर", "Item (English)": "Paneer", "Qty (Kg)": 2.0, "Rate": 300},
-        {"Bill No": 708, "Date": "2026-04-23", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 3.0, "Rate": 58},
-        {"Bill No": 708, "Date": "2026-04-23", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 4.0, "Rate": 60},
-        {"Bill No": 708, "Date": "2026-04-24", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 4.0, "Rate": 58},
-        {"Bill No": 708, "Date": "2026-04-24", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 2.0, "Rate": 60},
-        {"Bill No": 739, "Date": "2026-04-25", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 2.0, "Rate": 58},
-        {"Bill No": 739, "Date": "2026-04-25", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 4.0, "Rate": 60},
-        {"Bill No": 739, "Date": "2026-04-25", "Item (Hindi)": "पनीर", "Item (English)": "Paneer", "Qty (Kg)": 1.5, "Rate": 300},
-        {"Bill No": 739, "Date": "2026-04-27", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 3.0, "Rate": 60},
-        {"Bill No": 739, "Date": "2026-04-27", "Item (Hindi)": "पनीर", "Item (English)": "Paneer", "Qty (Kg)": 1.5, "Rate": 300},
-        {"Bill No": 739, "Date": "2026-04-28", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 5.0, "Rate": 60},
-        {"Bill No": 739, "Date": "2026-04-28", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 4.0, "Rate": 58},
-        {"Bill No": 739, "Date": "2026-04-28", "Item (Hindi)": "पनीर", "Item (English)": "Paneer", "Qty (Kg)": 2.0, "Rate": 300},
-        {"Bill No": 710, "Date": "2026-04-29", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 4.0, "Rate": 58},
-        {"Bill No": 710, "Date": "2026-04-29", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 5.0, "Rate": 60},
-        {"Bill No": 710, "Date": "2026-04-30", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 0.0, "Rate": 0},
-        {"Bill No": 710, "Date": "2026-04-30", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 5.0, "Rate": 60},
-        {"Bill No": 710, "Date": "2026-04-30", "Item (Hindi)": "पनीर", "Item (English)": "Paneer", "Qty (Kg)": 2.0, "Rate": 300},
-    ]
-
-    for idx, row_data in enumerate(compiled_data, 2):
-        ws2.cell(row=idx, column=1, value=row_data["Bill No"]).alignment = Alignment(horizontal="center")
-        ws2.cell(row=idx, column=2, value=row_data["Date"]).alignment = Alignment(horizontal="center")
-        ws2.cell(row=idx, column=3, value=row_data["Item (Hindi)"]).alignment = Alignment(horizontal="left")
-        ws2.cell(row=idx, column=4, value=row_data["Item (English)"]).alignment = Alignment(horizontal="left")
-        q_cell = ws2.cell(row=idx, column=5, value=row_data["Qty (Kg)"])
-        q_cell.number_format = "#,##0.0"
-        q_cell.alignment = Alignment(horizontal="right")
-        r_cell = ws2.cell(row=idx, column=6, value=row_data["Rate"])
-        r_cell.number_format = "₹#,##0"
-        r_cell.alignment = Alignment(horizontal="right")
-        a_cell = ws2.cell(row=idx, column=7, value=f"=E{idx}*F{idx}")
-        a_cell.number_format = "₹#,##0"
-        a_cell.alignment = Alignment(horizontal="right")
-        for c in range(1, 8):
-            cell = ws2.cell(row=idx, column=c)
-            cell.font = font_regular
-            cell.border = border_all
-            if idx % 2 == 1:
-                cell.fill = fill_zebra
-
-    for ws in [ws1, ws2]:
-        for col in ws.columns:
-            max_len = 0
-            col_letter = get_column_letter(col[0].column)
-            for cell in col:
-                if cell.value:
-                    val_str = str(cell.value)
-                    if not val_str.startswith("="):
-                        max_len = max(max_len, len(val_str))
-            ws.column_dimensions[col_letter].width = max(max_len + 4, 15)
-
-    ws1.column_dimensions["A"].width = 22
-    ws1.column_dimensions["B"].width = 25
-
-    try:
-        for b_no, period, orig_total in bill_summaries:
-            insert_bill(f"Shri Bala Ji Dairy (Bill {b_no})", "2026-04-01", "N/A", orig_total, orig_total, "Verified Matched")
-    except Exception:
-        pass
-
-    wb.save(buffer)
-    buffer.seek(0)
-    return buffer.getvalue()
-
-def build_batch_summary(results):
-    rows = []
-    for item in results:
+    det_row = 2
+    for idx, item in enumerate(results, 1):
         d = item.get("data")
-        if d:
-            raw_text = str(d.get("raw_text") or "").strip()
-            items = normalize_items(d.get("items"))
-            tmp_df = pd.DataFrame(items)
-            calc_total = float(pd.to_numeric(tmp_df["amount"], errors="coerce").fillna(0).sum()) if not tmp_df.empty else 0.0
-            total = safe_float(d.get("total", 0))
-            shop = str(d.get("shop_name") or "").strip()
-            bill_date = str(d.get("bill_date") or "").strip()
-            if not shop and raw_text:
-                for ln in [x.strip() for x in raw_text.splitlines() if x.strip()][:10]:
-                    if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
-                        shop = ln[:80]
-                        break
-            if not shop:
-                shop = "Unknown Shop"
-            if not bill_date:
-                bill_date = datetime.now().strftime("%Y-%m-%d")
-            status = "Needs Review" if total <= 0 else ("Matched" if abs(calc_total - total) < 1 else "Mismatch")
-            rows.append({
-                "page": item.get("page"),
-                "source": item.get("source"),
-                "shop_name": shop,
-                "bill_date": bill_date,
-                "gst_number": d.get("gst_number") or "N/A",
-                "bill_total": total,
-                "calculated_total": calc_total,
-                "difference": abs(calc_total - total),
-                "status": status
-            })
+        if not d:
+            continue
+        
+        shop = d.get("shop_name") or "Unknown Shop"
+        b_date = d.get("bill_date") or "N/A"
+        items = normalize_items(d.get("items"))
+        
+        # डेटाबेस में हिस्ट्री एंट्री के लिए सेव करना
+        try:
+            orig_t = safe_float(d.get("total", 0))
+            calc_t = sum(safe_float(it.get("amount", 0)) for it in items)
+            stat_str = "Matched" if abs(calc_t - orig_t) < 1 else "Mismatch"
+            insert_bill(shop, b_date, d.get("gst_number") or "N/A", orig_t, calc_t, stat_str)
+        except Exception:
+            pass
+
+        if not items:
+            # अगर कोई आइटम नहीं मिला तो ब्लैंक रो की जगह मूल कुल राशि डाल दें
+            ws2.cell(row=det_row, column=1, value=idx).alignment = Alignment(horizontal="center")
+            ws2.cell(row=det_row, column=2, value=b_date).alignment = Alignment(horizontal="center")
+            ws2.cell(row=det_row, column=3, value=shop).alignment = Alignment(horizontal="left")
+            ws2.cell(row=det_row, column=4, value="Total Bill (Items Extraction Missing)").alignment = Alignment(horizontal="left")
+            ws2.cell(row=det_row, column=5, value=1).alignment = Alignment(horizontal="right")
+            ws2.cell(row=det_row, column=6, value=safe_float(d.get("total", 0))).alignment = Alignment(horizontal="right")
+            ws2.cell(row=det_row, column=7, value=f"=E{det_row}*F{det_row}").alignment = Alignment(horizontal="right")
+            
+            for c in range(1, 8):
+                cell = ws2.cell(row=det_row, column=c)
+                cell.font = font_regular
+                cell.border = border_all
+            det_row += 1
         else:
-            rows.append({
-                "page": item.get("page"),
-                "source": item.get("source"),
-                "shop_name": "Unknown Shop",
-                "bill_date": None,
-                "gst_number": None,
-                "bill_total": None,
-                "calculated_total": None,
-                "difference": None,
-                "status": f"Error: {item.get('error')}"
-            })
-    return pd.DataFrame(rows)
-
-def render_theme_toggle(location="main"):
-    mode = st.radio("Theme", ["light", "dark"], horizontal=True, index=0 if st.session_state.get("theme_mode", "light") == "light" else 1, key=f"theme_radio_{location}")
-    if mode != st.session_state.get("theme_mode", "light"):
-        st.session_state["theme_mode"] = mode
-        st.rerun()
-
-def make_share_text(df=None):
-    total = len(df) if df is not None and not df.empty else 0
-    matched = int((df["status"] == "Matched").sum()) if total else 0
-    mismatch = int((df["status"] == "Mismatch").sum()) if total else 0
-    review = int((df["status"] == "Needs Review").sum()) if total else 0
-
-    return (
-        f"{APP_TITLE}\n"
-        f"Files Processed: {total}\n"
-        f"Matched: {matched}\n"
-        f"Mismatch: {mismatch}\n"
-        f"Needs Review: {review}"
-    )
-
-def share_whatsapp(text):
-    return "https://wa.me/?text=" + urllib.parse.quote(text)
-
-def share_telegram(text):
-    return "https://t.me/share/url?url=&text=" + urllib.parse.quote(text)
-
-def share_email(text, subject="Bill Dashboard Report"):
-    return "mailto:?subject=" + urllib.parse.quote(subject) + "&body=" + urllib.parse.quote(text)
-
-def render_upload_module():
-    st.markdown("""
-        <div class="deep-csc-header">
-            <div class="branding-text">
-                <h1>🧾 AI Multi-Bill OCR Processor</h1>
-                <p>Automated structural data parsing pipeline powered by multiple providers.</p>
-            </div>
-            <div class="csc-meta-badge">📍 <b>Deep CSC</b><br>👤 Owner: Deepak | ID: 256423250015</div>
-            <div class="branding-badge">Deep CSC AI</div>
-        </div>
-    """, unsafe_allow_html=True)
-
-    tabs = st.tabs(["📷 Scan / Upload", "🕘 History", "⚙️ Settings"])
-
-    with tabs[0]:
-        providers = ["Gemini", "Google Vision OCR", "Perplexity", "OpenAI"]
-        st.session_state.selected_provider = st.selectbox("Select OCR Provider", providers, index=providers.index("Gemini"), key="provider_selectbox")
-
-        uploaded_files = st.file_uploader(
-            "Upload Bill Images or PDFs",
-            type=["jpg", "jpeg", "png", "pdf"],
-            accept_multiple_files=True,
-            key="bill_uploader",
-        )
-
-        col_a, col_b = st.columns(2)
-        with col_a:
-            process_now = st.button("Process All Files", use_container_width=True)
-        with col_b:
-            clear_state = st.button("Clear Uploaded / Processed Files", use_container_width=True)
-
-        if clear_state:
-            st.session_state.processed_files = set()
-            st.rerun()
-
-        model_bundle = {
-            "vision_client": setup_google_vision(),
-            "gemini": setup_gemini(),
-            "perplexity": setup_perplexity(),
-            "openai": setup_openai(),
-        }
-
-        if uploaded_files and process_now:
-            all_results = []
-            for uploaded_file in uploaded_files:
-                file_key = f"{uploaded_file.name}_{uploaded_file.size}"
-                if file_key in st.session_state.processed_files:
-                    continue
-
-                file_bytes = uploaded_file.getvalue()
-                name_lower = uploaded_file.name.lower()
-
-                if name_lower.endswith(".pdf"):
-                    try:
-                        pages = convert_pdf_to_images(file_bytes)
-                        for i, img in enumerate(pages):
-                            data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
-                            all_results.append({"page": i + 1, "source": uploaded_file.name, "data": data})
-                    except Exception as e:
-                        st.error(f"Error processing {uploaded_file.name}: {e}")
-                else:
-                    img = Image.open(BytesIO(file_bytes)).convert("RGB")
-                    data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
-                    all_results.append({"page": 1, "source": uploaded_file.name, "data": data})
-
-                st.session_state.processed_files.add(file_key)
-
-            if all_results:
-                df = build_batch_summary(all_results)
-                render_metrics(df)
-                st.markdown('<div class="section-card">', unsafe_allow_html=True)
-                st.dataframe(df, use_container_width=True)
-                st.markdown('</div>', unsafe_allow_html=True)
-
-                summary_text = make_share_text(df)
-                s1, s2, s3 = st.columns(3)
-                with s1:
-                    st.link_button("📱 Share on WhatsApp", share_whatsapp(summary_text), use_container_width=True)
-                with s2:
-                    st.link_button("✈️ Share on Telegram", share_telegram(summary_text), use_container_width=True)
-                with s3:
-                    st.link_button("📧 Share by Email", share_email(summary_text), use_container_width=True)
-
-                excel_data = build_excel_export(all_results)
-                st.download_button(
-                    "📥 Download Excel Report",
-                    data=excel_data,
-                    file_name="Shri_Bala_Ji_Dairy_Bill_Summary.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-        else:
-            st.info("Upload images or PDFs, then click Process All Files.")
-
-    with tabs[1]:
-        st.subheader("Processing History")
-        with sqlite3.connect(DB_PATH) as conn:
-            history_df = pd.read_sql_query("SELECT * FROM bills ORDER BY timestamp DESC", conn)
-        st.dataframe(history_df, use_container_width=True)
-
-    with tabs[2]:
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        render_theme_toggle("settings")
-        st.markdown('</div>', unsafe_allow_html=True)
-
-def main():
-    setup_page()
-    init_db()
-    init_auth()
-    init_runtime_state()
-    apply_theme_css()
-    apply_css()
-
-    if not st.session_state.logged_in:
-        do_login()
-    else:
-        render_upload_module()
-        if st.sidebar.button("Logout"):
-            terminate_session()
-
-if __name__ == "__main__":
-    main()
+            for it in items:
+                ws2.cell(row=det_row, column=1, value=idx).alignment = Alignment(horizontal="center")
+                ws2.cell(row=det_row, column=2, value=b_date).alignment = Alignment(horizontal="center")
+                ws2.cell(row=det_row, column=3, value=shop).alignment = Alignment(horizontal="left")
+                ws2.cell(row=det_row, column=4, value=it.get("name") or "Item").alignment = Alignment(horizontal="left")
+                
+                q_val = safe_float(it.get("qty", 1))
+                r_val = safe_float(it.get("rate", 0))
+                
+                q_cell = ws2.cell(row=det_row, column=5, value=q_val)
+                q_cell.number_format = "#,##0.00"
+                q_cell.alignment = Alignment(horizontal="right")
+                
+                r_cell = ws2.cell(row=det_row, column=6, value=r_val)
+                r_cell.number_format = "₹#,##0.00"
+                r_cell.alignment = Alignment(horizontal="right")
+                
+                a_cell = ws2.cell(row=det_row, column=7, value=f"=E{det_row}*F{det_row}")
+                a_cell.number_format = "₹#,##0.00"
+                a_cell.alignment = Alignment(horizontal="right")
+                
+                for c in range(1, 8):
+                    cell = ws2.cell(row=det_
