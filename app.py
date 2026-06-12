@@ -1,8 +1,11 @@
 import base64
 import json
+import logging
 import os
+import random
 import re
 import sqlite3
+import time
 import urllib.parse
 import warnings
 from dataclasses import dataclass
@@ -18,6 +21,8 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
 warnings.filterwarnings("ignore")
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+logger = logging.getLogger("bill_processor")
 
 try:
     import fitz
@@ -49,20 +54,10 @@ try:
 except Exception:
     vision = None
 
-try:
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-    from googleapiclient.http import MediaFileUpload
-except Exception:
-    service_account = None
-    build = None
-    MediaFileUpload = None
-
 APP_TITLE = "Deep CSC - AI Bill Processor Premium"
 DB_PATH = "bills.db"
 OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
-
 PROVIDERS = ["Gemini", "Google Vision OCR", "Perplexity", "OpenAI"]
 
 
@@ -96,6 +91,15 @@ def init_state():
         "gemini_available": True,
         "last_gemini_error_time": None,
         "gemini_cooldown_seconds": 900,
+        "ocr_failures": 0,
+        "file_statuses": [],
+        "error_log": [],
+        "provider_stats": {
+            "Gemini": {"ok": 0, "fail": 0},
+            "Google Vision OCR": {"ok": 0, "fail": 0},
+            "Perplexity": {"ok": 0, "fail": 0},
+            "OpenAI": {"ok": 0, "fail": 0},
+        },
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -260,16 +264,7 @@ def apply_css():
 
 
 def metric_card(label, value, sub=""):
-    st.markdown(
-        f"""
-        <div class="metric-card">
-            <div class="metric-label">{label}</div>
-            <div class="metric-value">{value}</div>
-            <div class="metric-sub">{sub}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    st.markdown(f"""<div class="metric-card"><div class="metric-label">{label}</div><div class="metric-value">{value}</div><div class="metric-sub">{sub}</div></div>""", unsafe_allow_html=True)
 
 
 def render_metrics(df):
@@ -467,27 +462,13 @@ def heuristic_extract_items(text):
             name = re.sub(r"[\|\:\-]+", " ", name)
             name = re.sub(r"\s+", " ", name).strip()
             if len(name) >= 2 and amount > 0:
-                items.append(
-                    {
-                        "name": name[:120],
-                        "qty": str(qty) if qty > 0 else "",
-                        "rate": str(rate) if rate > 0 else "",
-                        "amount": str(amount),
-                    }
-                )
+                items.append({"name": name[:120], "qty": str(qty) if qty > 0 else "", "rate": str(rate) if rate > 0 else "", "amount": str(amount)})
     return items[:100]
 
 
 def heuristic_parse_from_text(text):
     text = clean_text(text)
-    return OCRResult(
-        shop_name=extract_shop_name(text),
-        bill_date=extract_bill_date(text),
-        gst_number=extract_gst_number(text),
-        items=heuristic_extract_items(text),
-        total=extract_total(text),
-        raw_text=text,
-    )
+    return OCRResult(extract_shop_name(text), extract_bill_date(text), extract_gst_number(text), heuristic_extract_items(text), extract_total(text), text)
 
 
 def normalize_result(data, fallback_text=""):
@@ -502,14 +483,7 @@ def normalize_result(data, fallback_text=""):
     total = data.get("total") if data.get("total") not in (None, "", "N/A") else heur.total
     if not normalize_date(bill_date):
         bill_date = heur.bill_date
-    return {
-        "shop_name": str(shop).strip() or "Unknown Shop",
-        "bill_date": normalize_date(bill_date) or heur.bill_date,
-        "gst_number": str(gst_number).strip() or "N/A",
-        "items": normalize_items(items),
-        "total": safe_float(total),
-        "raw_text": raw_text,
-    }
+    return {"shop_name": str(shop).strip() or "Unknown Shop", "bill_date": normalize_date(bill_date) or heur.bill_date, "gst_number": str(gst_number).strip() or "N/A", "items": normalize_items(items), "total": safe_float(total), "raw_text": raw_text}
 
 
 def build_schema_prompt():
@@ -572,16 +546,84 @@ def is_gemini_quota_error(err):
     return ("429" in msg) or ("quota" in msg) or ("resource_exhausted" in msg) or ("rate limit" in msg)
 
 
+def retry_call(fn, retries=3, base_delay=1.0, retry_on_result_none=True):
+    last_err = None
+    for attempt in range(retries):
+        try:
+            result = fn()
+            if not retry_on_result_none or result is not None:
+                return result
+        except Exception as e:
+            last_err = e
+        time.sleep(min(10.0, base_delay * (2 ** attempt)) + random.uniform(0, 0.5))
+    if last_err:
+        raise last_err
+    return None
+
+
+def add_error(provider, file_name, message):
+    st.session_state.error_log.append({"time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "provider": provider, "file_name": file_name, "message": str(message)})
+    st.session_state.error_log = st.session_state.error_log[-100:]
+
+
+def record_provider_result(provider, success=True):
+    if provider not in st.session_state.provider_stats:
+        st.session_state.provider_stats[provider] = {"ok": 0, "fail": 0}
+    if success:
+        st.session_state.provider_stats[provider]["ok"] += 1
+    else:
+        st.session_state.provider_stats[provider]["fail"] += 1
+
+
+def get_status_badge_text(status):
+    if status == "Matched":
+        return ":green-badge[Matched]"
+    if status == "Mismatch":
+        return ":orange-badge[Mismatch]"
+    if status == "Needs Review":
+        return ":red-badge[Needs Review]"
+    if status == "Processing":
+        return ":blue-badge[Processing]"
+    if status == "Skipped":
+        return ":gray-badge[Skipped]"
+    return ":gray-badge[Unknown]"
+
+
+def render_status_badges(df=None):
+    if df is None or df.empty:
+        st.markdown(":gray-badge[No files processed yet]")
+        return
+    matched = int((df["status"] == "Matched").sum())
+    mismatch = int((df["status"] == "Mismatch").sum())
+    review = int((df["status"] == "Needs Review").sum())
+    total = len(df)
+    st.markdown(f":blue-badge[Total: {total}] :green-badge[Matched: {matched}] :orange-badge[Mismatch: {mismatch}] :red-badge[Review: {review}]")
+
+
+def render_error_panel():
+    with st.expander("⚠️ Structured Error Panel", expanded=False):
+        if not st.session_state.error_log:
+            st.success("No errors captured yet.")
+            return
+        err_df = pd.DataFrame(st.session_state.error_log)
+        st.dataframe(err_df, use_container_width=True)
+        st.markdown("### Provider Health")
+        health_rows = []
+        for provider, stats in st.session_state.provider_stats.items():
+            health_rows.append({"provider": provider, "ok": stats["ok"], "fail": stats["fail"], "health": "Healthy" if stats["fail"] == 0 else "Degraded"})
+        st.dataframe(pd.DataFrame(health_rows), use_container_width=True)
+        st.download_button("⬇️ Download Error Log", data=err_df.to_csv(index=False).encode("utf-8"), file_name="error_log.csv", mime="text/csv", use_container_width=True)
+
+
 def try_gemini(model, image):
+    def _call():
+        resp = model.generate_content([build_schema_prompt(), image], generation_config={"temperature": 0, "response_mime_type": "application/json"})
+        return normalize_result(parse_json_from_response(getattr(resp, "text", "")))
     try:
-        resp = model.generate_content(
-            [build_schema_prompt(), image],
-            generation_config={"temperature": 0, "response_mime_type": "application/json"},
-        )
-        data = parse_json_from_response(getattr(resp, "text", ""))
+        data = retry_call(_call, retries=3, base_delay=1.0)
         st.session_state.gemini_available = True
         st.session_state.last_gemini_error_time = None
-        return normalize_result(data), None
+        return data, None
     except Exception as e:
         if is_gemini_quota_error(e):
             st.session_state.gemini_available = False
@@ -591,56 +633,46 @@ def try_gemini(model, image):
 
 def try_perplexity(client, image):
     b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
-    resp = client.chat.completions.create(
-        model=secret_or_default("PERPLEXITY_MODEL", "sonar-pro"),
-        messages=[
-            {"role": "system", "content": build_schema_prompt()},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Extract invoice JSON from this image."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
-                ],
-            },
-        ],
-        temperature=0.0,
-    )
-    return normalize_result(parse_json_from_response(resp.choices[0].message.content))
+
+    def _call():
+        resp = client.chat.completions.create(
+            model=secret_or_default("PERPLEXITY_MODEL", "sonar-pro"),
+            messages=[{"role": "system", "content": build_schema_prompt()}, {"role": "user", "content": [{"type": "text", "text": "Extract invoice JSON from this image."}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}}]}],
+            temperature=0.0,
+        )
+        return normalize_result(parse_json_from_response(resp.choices[0].message.content))
+    return retry_call(_call, retries=3, base_delay=1.0)
 
 
 def try_openai(client, image):
     b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
-    resp = client.chat.completions.create(
-        model=secret_or_default("OPENAI_MODEL", "gpt-4o-mini"),
-        messages=[
-            {"role": "system", "content": build_schema_prompt()},
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "Extract invoice JSON from this image."},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
-                ],
-            },
-        ],
-        response_format={"type": "json_object"},
-    )
-    return normalize_result(parse_json_from_response(resp.choices[0].message.content))
+
+    def _call():
+        resp = client.chat.completions.create(
+            model=secret_or_default("OPENAI_MODEL", "gpt-4o-mini"),
+            messages=[{"role": "system", "content": build_schema_prompt()}, {"role": "user", "content": [{"type": "text", "text": "Extract invoice JSON from this image."}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}}]}],
+            response_format={"type": "json_object"},
+        )
+        return normalize_result(parse_json_from_response(resp.choices[0].message.content))
+    return retry_call(_call, retries=3, base_delay=1.0)
 
 
 def extract_vision_text(vision_client, image):
-    img = vision.Image(content=image_to_bytes(image))
-    resp = vision_client.document_text_detection(image=img)
-    text = ""
-    if getattr(resp, "full_text_annotation", None):
-        text = getattr(resp.full_text_annotation, "text", "") or ""
-    if not text.strip() and getattr(resp, "text_annotations", None):
-        anns = resp.text_annotations
-        if anns and getattr(anns[0], "description", ""):
-            text = anns[0].description.strip()
-    return clean_text(text)
+    def _call():
+        img = vision.Image(content=image_to_bytes(image))
+        resp = vision_client.document_text_detection(image=img)
+        text = ""
+        if getattr(resp, "full_text_annotation", None):
+            text = getattr(resp.full_text_annotation, "text", "") or ""
+        if not text.strip() and getattr(resp, "text_annotations", None):
+            anns = resp.text_annotations
+            if anns and getattr(anns[0], "description", ""):
+                text = anns[0].description.strip()
+        return clean_text(text)
+    return retry_call(_call, retries=2, base_delay=0.5) or ""
 
 
-def analyze_with_auto_fallback(model_bundle, image, forced=None):
+def analyze_with_auto_fallback(model_bundle, image, forced=None, file_name="unknown"):
     image = preprocess_for_ocr(image)
     order = PROVIDERS[:]
     if forced in order:
@@ -650,28 +682,37 @@ def analyze_with_auto_fallback(model_bundle, image, forced=None):
             if provider == "Gemini" and model_bundle.get("gemini") and can_try_gemini():
                 data, _ = try_gemini(model_bundle["gemini"], image)
                 if data:
+                    record_provider_result(provider, True)
                     return data
             elif provider == "Google Vision OCR" and model_bundle.get("vision_client"):
                 text = extract_vision_text(model_bundle["vision_client"], image)
                 if text:
+                    record_provider_result(provider, True)
                     return normalize_result({}, text)
             elif provider == "Perplexity" and model_bundle.get("perplexity"):
-                return try_perplexity(model_bundle["perplexity"], image)
+                data = try_perplexity(model_bundle["perplexity"], image)
+                if data:
+                    record_provider_result(provider, True)
+                    return data
             elif provider == "OpenAI" and model_bundle.get("openai"):
-                return try_openai(model_bundle["openai"], image)
-        except Exception:
+                data = try_openai(model_bundle["openai"], image)
+                if data:
+                    record_provider_result(provider, True)
+                    return data
+        except Exception as e:
+            record_provider_result(provider, False)
+            add_error(provider, file_name, e)
+            logger.warning("Provider %s failed on %s: %s", provider, file_name, e)
             continue
+    st.session_state.ocr_failures += 1
+    add_error("ALL_PROVIDERS", file_name, "All OCR providers failed")
     return normalize_result({}, "")
 
 
 def insert_bill(shop, date, gst, total, calc_total, status):
     with sqlite3.connect(DB_PATH, timeout=30) as conn:
         conn.execute(
-            """
-            INSERT OR IGNORE INTO bills
-            (shop_name, bill_date, gst_number, total, calculated_total, status, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
+            """INSERT OR IGNORE INTO bills (shop_name, bill_date, gst_number, total, calculated_total, status, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (shop, date, gst, total, calc_total, status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
         )
         conn.commit()
@@ -692,37 +733,14 @@ def normalize_bill_row(row, fallback_index=1):
     bill_date = str(d.get("bill_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
     gst_number = d.get("gst_number") or "N/A"
     status = "Needs Review" if total <= 0 else ("Matched" if abs(calc_total - total) < 1 else "Mismatch")
-    return {
-        "page": row.get("page", fallback_index),
-        "source": row.get("source", ""),
-        "shop_name": shop,
-        "bill_date": bill_date,
-        "gst_number": gst_number,
-        "bill_total": total,
-        "calculated_total": calc_total,
-        "difference": abs(calc_total - total),
-        "status": status,
-        "items": items,
-    }
+    return {"page": row.get("page", fallback_index), "source": row.get("source", ""), "shop_name": shop, "bill_date": bill_date, "gst_number": gst_number, "bill_total": total, "calculated_total": calc_total, "difference": abs(calc_total - total), "status": status, "items": items}
 
 
 def build_batch_summary(results):
     rows = []
     for idx, item in enumerate(results, 1):
         row = normalize_bill_row(item, idx)
-        rows.append(
-            {
-                "page": row["page"],
-                "source": row["source"],
-                "shop_name": row["shop_name"],
-                "bill_date": row["bill_date"],
-                "gst_number": row["gst_number"],
-                "bill_total": row["bill_total"],
-                "calculated_total": row["calculated_total"],
-                "difference": row["difference"],
-                "status": row["status"],
-            }
-        )
+        rows.append({"page": row["page"], "source": row["source"], "shop_name": row["shop_name"], "bill_date": row["bill_date"], "gst_number": row["gst_number"], "bill_total": row["bill_total"], "calculated_total": row["calculated_total"], "difference": row["difference"], "status": row["status"]})
         insert_bill(row["shop_name"], row["bill_date"], row["gst_number"], row["bill_total"], row["calculated_total"], row["status"])
     return pd.DataFrame(rows)
 
@@ -748,13 +766,7 @@ def share_email(text, subject="Bill Dashboard Report"):
 
 
 def render_theme_toggle(location="main"):
-    mode = st.radio(
-        "Theme",
-        ["light", "dark"],
-        horizontal=True,
-        index=0 if st.session_state.get("theme_mode", "light") == "light" else 1,
-        key=f"theme_radio_{location}",
-    )
+    mode = st.radio("Theme", ["light", "dark"], horizontal=True, index=0 if st.session_state.get("theme_mode", "light") == "light" else 1, key=f"theme_radio_{location}")
     if mode != st.session_state.get("theme_mode", "light"):
         st.session_state["theme_mode"] = mode
         st.rerun()
@@ -776,18 +788,15 @@ def build_excel_export(results):
     ws1 = wb.active
     ws1.title = "Summary Dashboard"
     ws1.views.sheetView[0].showGridLines = True
-
     navy_dark = "1F4E78"
     navy_zebra = "F2F4F8"
     white = "FFFFFF"
     gray_border = "D9D9D9"
-
     font_title = Font(name="Calibri", size=16, bold=True, color="1F4E78")
     font_section = Font(name="Calibri", size=12, bold=True, color="1F4E78")
     font_header = Font(name="Calibri", size=11, bold=True, color=white)
     font_bold = Font(name="Calibri", size=11, bold=True)
     font_regular = Font(name="Calibri", size=11)
-
     fill_header = PatternFill(start_color=navy_dark, end_color=navy_dark, fill_type="solid")
     fill_zebra = PatternFill(start_color=navy_zebra, end_color=navy_zebra, fill_type="solid")
     thin_side = Side(border_style="thin", color=gray_border)
@@ -910,6 +919,32 @@ def build_excel_export(results):
     return buffer.getvalue()
 
 
+def process_single_file(uploaded_file, model_bundle, forced_provider):
+    file_name = uploaded_file.name
+    file_bytes = uploaded_file.getvalue()
+    with st.status(f"Processing {file_name}", expanded=False) as status_box:
+        status_box.write("Starting file analysis...")
+        try:
+            if file_name.lower().endswith(".pdf"):
+                pages = convert_pdf_to_images(file_bytes)
+                results = []
+                for i, img in enumerate(pages):
+                    status_box.write(f"Processing page {i + 1}/{len(pages)}")
+                    data = analyze_with_auto_fallback(model_bundle, img, forced=forced_provider, file_name=file_name)
+                    results.append({"page": i + 1, "source": file_name, "data": data})
+                status_box.update(label=f"{file_name} processed successfully", state="complete", expanded=False)
+                return results
+            img = Image.open(BytesIO(file_bytes)).convert("RGB")
+            data = analyze_with_auto_fallback(model_bundle, img, forced=forced_provider, file_name=file_name)
+            status_box.update(label=f"{file_name} processed successfully", state="complete", expanded=False)
+            return [{"page": 1, "source": file_name, "data": data}]
+        except Exception as e:
+            add_error("FILE_PROCESS", file_name, e)
+            status_box.update(label=f"{file_name} failed", state="error", expanded=True)
+            st.error(f"Error processing {file_name}: {e}")
+            return []
+
+
 def render_upload_module():
     st.markdown(
         """
@@ -939,6 +974,8 @@ def render_upload_module():
 
         if clear_state:
             st.session_state.processed_files = set()
+            st.session_state.error_log = []
+            st.session_state.file_statuses = []
             st.rerun()
 
         model_bundle = {
@@ -950,34 +987,46 @@ def render_upload_module():
 
         if uploaded_files and process_now:
             all_results = []
-            for uploaded_file in uploaded_files:
+            prog = st.progress(0)
+            total_files = len(uploaded_files)
+            file_rows = []
+
+            for idx_file, uploaded_file in enumerate(uploaded_files, 1):
                 file_key = f"{uploaded_file.name}_{uploaded_file.size}"
                 if file_key in st.session_state.processed_files:
+                    file_rows.append({"file_name": uploaded_file.name, "status": "Skipped", "badge": get_status_badge_text("Skipped"), "note": "Already processed"})
+                    prog.progress(idx_file / total_files)
                     continue
 
-                file_bytes = uploaded_file.getvalue()
+                try:
+                    result_rows = process_single_file(uploaded_file, model_bundle, st.session_state.selected_provider)
+                    all_results.extend(result_rows)
 
-                if uploaded_file.name.lower().endswith(".pdf"):
-                    try:
-                        pages = convert_pdf_to_images(file_bytes)
-                        for i, img in enumerate(pages):
-                            data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
-                            all_results.append({"page": i + 1, "source": uploaded_file.name, "data": data})
-                    except Exception as e:
-                        st.error(f"Error processing {uploaded_file.name}: {e}")
-                else:
-                    img = Image.open(BytesIO(file_bytes)).convert("RGB")
-                    data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
-                    all_results.append({"page": 1, "source": uploaded_file.name, "data": data})
+                    if result_rows:
+                        file_rows.append({"file_name": uploaded_file.name, "status": "Success", "badge": ":green-badge[Success]", "note": f"{len(result_rows)} page(s) extracted"})
+                    else:
+                        file_rows.append({"file_name": uploaded_file.name, "status": "Failed", "badge": ":red-badge[Failed]", "note": "No usable output"})
 
-                st.session_state.processed_files.add(file_key)
+                    st.session_state.processed_files.add(file_key)
+                except Exception as e:
+                    add_error("FILE_LOOP", uploaded_file.name, e)
+                    file_rows.append({"file_name": uploaded_file.name, "status": "Failed", "badge": ":red-badge[Failed]", "note": str(e)})
+                prog.progress(idx_file / total_files)
 
             if all_results:
                 df = build_batch_summary(all_results)
                 render_metrics(df)
+                render_status_badges(df)
+
+                st.markdown("### File Status")
+                status_df = pd.DataFrame(file_rows)
+                st.dataframe(status_df, use_container_width=True)
+
                 st.markdown('<div class="section-card">', unsafe_allow_html=True)
                 st.dataframe(df, use_container_width=True)
                 st.markdown("</div>", unsafe_allow_html=True)
+
+                render_error_panel()
 
                 summary_text = make_share_text(df)
                 s1, s2, s3 = st.columns(3)
@@ -994,6 +1043,9 @@ def render_upload_module():
                     file_name="Geeta_Fruit_Vegetables_Suppliers_Bill_Summary.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
+            else:
+                render_error_panel()
+                st.warning("No valid results produced. Check error panel for details.")
 
     with tabs[1]:
         st.subheader("Processing History")
@@ -1016,6 +1068,9 @@ def render_app():
             if st.button("Logout", use_container_width=True):
                 logout()
             render_theme_toggle("sidebar")
+            st.markdown("### Health")
+            st.badge("OCR Ready", color="green", icon=":material/check_circle:")
+            st.badge(f"Failures: {st.session_state.get('ocr_failures', 0)}", color="orange", icon=":material/error:")
         render_upload_module()
 
 
