@@ -459,7 +459,7 @@ def heuristic_extract_items(text):
             rate = safe_float(nums[-2])
             qty = safe_float(nums[-3]) if len(nums) >= 3 else 0.0
             name = re.sub(r"\d+(?:,\d{3})*(?:\.\d+)?", " ", ln)
-            name = re.sub(r"[\|\:\-]+", " ", name)
+            name = re.sub(r"[\\|\:\-]+", " ", name)
             name = re.sub(r"\s+", " ", name).strip()
             if len(name) >= 2 and amount > 0:
                 items.append({"name": name[:120], "qty": str(qty) if qty > 0 else "", "rate": str(rate) if rate > 0 else "", "amount": str(amount)})
@@ -633,7 +633,6 @@ def try_gemini(model, image):
 
 def try_perplexity(client, image):
     b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
-
     def _call():
         resp = client.chat.completions.create(
             model=secret_or_default("PERPLEXITY_MODEL", "sonar-pro"),
@@ -646,7 +645,6 @@ def try_perplexity(client, image):
 
 def try_openai(client, image):
     b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
-
     def _call():
         resp = client.chat.completions.create(
             model=secret_or_default("OPENAI_MODEL", "gpt-4o-mini"),
@@ -788,62 +786,89 @@ def build_excel_export(results):
     ws1 = wb.active
     ws1.title = "Summary Dashboard"
     ws1.views.sheetView[0].showGridLines = True
+
     navy_dark = "1F4E78"
     navy_zebra = "F2F4F8"
     white = "FFFFFF"
     gray_border = "D9D9D9"
+
     font_title = Font(name="Calibri", size=16, bold=True, color="1F4E78")
     font_section = Font(name="Calibri", size=12, bold=True, color="1F4E78")
     font_header = Font(name="Calibri", size=11, bold=True, color=white)
     font_bold = Font(name="Calibri", size=11, bold=True)
     font_regular = Font(name="Calibri", size=11)
+
     fill_header = PatternFill(start_color=navy_dark, end_color=navy_dark, fill_type="solid")
     fill_zebra = PatternFill(start_color=navy_zebra, end_color=navy_zebra, fill_type="solid")
     thin_side = Side(border_style="thin", color=gray_border)
     border_all = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
 
-    ws1["A1"] = "GEETA FRUIT & VEGETABLES SUPPLIERS - INVOICE SUMMARY & AUDIT"
+    normalized = [normalize_bill_row(r, i + 1) for i, r in enumerate(results)]
+    vendors = sorted({row["shop_name"] for row in normalized if row.get("shop_name")})
+
+    ws1["A1"] = "MULTI-BILL INVOICE SUMMARY & AUDIT"
     ws1["A1"].font = font_title
     ws1["A2"] = f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     ws1["A2"].font = Font(name="Calibri", size=11, italic=True)
-    ws1["A4"] = "1. Bill-wise Breakdown"
-    ws1["A4"].font = font_section
+    ws1["A3"] = f"Vendors detected: {len(vendors)}"
+    ws1["A3"].font = Font(name="Calibri", size=11, italic=True)
+
+    if vendors:
+        preview = " | ".join(vendors[:5])
+        if len(vendors) > 5:
+            preview += " ..."
+        ws1["A4"] = preview
+        ws1["A4"].font = Font(name="Calibri", size=10, italic=True)
+
+    ws1["A6"] = "1. Bill-wise Breakdown"
+    ws1["A6"].font = font_section
 
     headers_bill = ["Bill No.", "Source File", "Shop Name", "Bill Date", "Original Total", "Calculated Total", "Difference", "Status"]
     for col_num, h in enumerate(headers_bill, 1):
-        c = ws1.cell(row=5, column=col_num, value=h)
+        c = ws1.cell(row=7, column=col_num, value=h)
         c.font = font_header
         c.fill = fill_header
         c.alignment = Alignment(horizontal="center", vertical="center")
+        c.border = border_all
 
-    normalized = [normalize_bill_row(r, i + 1) for i, r in enumerate(results)]
-    for idx, row in enumerate(normalized, 6):
-        values = [idx - 5, row["source"], row["shop_name"], row["bill_date"], row["bill_total"], row["calculated_total"], row["difference"], row["status"]]
+    for idx, row in enumerate(normalized, 8):
+        values = [
+            idx - 7,
+            row["source"],
+            row["shop_name"],
+            row["bill_date"],
+            row["bill_total"],
+            row["calculated_total"],
+            row["difference"],
+            row["status"],
+        ]
         for cidx, val in enumerate(values, 1):
             cell = ws1.cell(row=idx, column=cidx, value=val)
             cell.font = font_regular
             cell.border = border_all
-            if idx % 2 == 1:
+            if idx % 2 == 0:
                 cell.fill = fill_zebra
         ws1.cell(row=idx, column=5).number_format = "₹#,##0.00"
         ws1.cell(row=idx, column=6).number_format = "₹#,##0.00"
         ws1.cell(row=idx, column=7).number_format = "₹#,##0.00"
 
-    end_row = 5 + len(normalized)
+    end_row = 7 + len(normalized)
     ws1.cell(row=end_row + 1, column=1, value="Grand Total").font = font_bold
-    ws1.cell(row=end_row + 1, column=5, value=f"=SUM(E6:E{end_row})").font = font_bold
+    ws1.cell(row=end_row + 1, column=5, value=f"=SUM(E8:E{end_row})").font = font_bold
     ws1.cell(row=end_row + 1, column=5).number_format = "₹#,##0.00"
-    ws1.cell(row=end_row + 1, column=6, value=f"=SUM(F6:F{end_row})").font = font_bold
+    ws1.cell(row=end_row + 1, column=6, value=f"=SUM(F8:F{end_row})").font = font_bold
     ws1.cell(row=end_row + 1, column=6).number_format = "₹#,##0.00"
 
-    ws1["A14"] = "2. Product Consumption Summary"
-    ws1["A14"].font = font_section
+    product_section_row = end_row + 4
+    ws1.cell(row=product_section_row, column=1, value="2. Product Consumption Summary").font = font_section
+
     headers_prod = ["Product Name", "Total Qty", "Avg Rate", "Total Amount"]
     for col_num, h in enumerate(headers_prod, 1):
-        c = ws1.cell(row=15, column=col_num, value=h)
+        c = ws1.cell(row=product_section_row + 1, column=col_num, value=h)
         c.font = font_header
         c.fill = fill_header
         c.alignment = Alignment(horizontal="center", vertical="center")
+        c.border = border_all
 
     item_aggregate = {}
     for row in normalized:
@@ -852,16 +877,19 @@ def build_excel_export(results):
             qty = safe_float(item.get("qty", 0))
             rate = safe_float(item.get("rate", 0))
             amount = safe_float(item.get("amount", 0))
+
             if name not in item_aggregate:
                 item_aggregate[name] = {"qty": 0.0, "rate_sum": 0.0, "rate_count": 0, "amount": 0.0}
+
             item_aggregate[name]["qty"] += qty
             if rate > 0:
                 item_aggregate[name]["rate_sum"] += rate
                 item_aggregate[name]["rate_count"] += 1
             item_aggregate[name]["amount"] += amount if amount > 0 else qty * rate
 
-    prod_start = 16
+    prod_start = product_section_row + 2
     last_prod_row = prod_start - 1
+
     for idx, (name, data) in enumerate(sorted(item_aggregate.items()), prod_start):
         last_prod_row = idx
         avg_rate = data["rate_sum"] / data["rate_count"] if data["rate_count"] else 0
@@ -869,11 +897,12 @@ def build_excel_export(results):
         ws1.cell(row=idx, column=2, value=data["qty"]).number_format = "#,##0.0"
         ws1.cell(row=idx, column=3, value=avg_rate).number_format = "₹#,##0.00"
         ws1.cell(row=idx, column=4, value=data["amount"]).number_format = "₹#,##0.00"
+
         for c in range(1, 5):
             cell = ws1.cell(row=idx, column=c)
             cell.font = font_regular
             cell.border = border_all
-            if idx % 2 == 1:
+            if idx % 2 == 0:
                 cell.fill = fill_zebra
 
     if last_prod_row >= prod_start:
@@ -884,12 +913,14 @@ def build_excel_export(results):
 
     ws2 = wb.create_sheet(title="Detailed Transactions")
     ws2.views.sheetView[0].showGridLines = True
+
     headers_det = ["Bill No", "Source File", "Date", "Particulars", "Qty", "Rate", "Amount"]
     for col_num, h in enumerate(headers_det, 1):
         c = ws2.cell(row=1, column=col_num, value=h)
         c.font = font_header
         c.fill = fill_header
         c.alignment = Alignment(horizontal="center", vertical="center")
+        c.border = border_all
 
     det_row = 2
     for bill_no, row in enumerate(normalized, 1):
@@ -900,13 +931,15 @@ def build_excel_export(results):
             amount = safe_float(item.get("amount", 0))
             if amount <= 0 and qty > 0 and rate > 0:
                 amount = qty * rate
+
             vals = [bill_no, row["source"], row["bill_date"], name, qty, rate, amount]
             for cidx, val in enumerate(vals, 1):
                 cell = ws2.cell(row=det_row, column=cidx, value=val)
                 cell.font = font_regular
                 cell.border = border_all
-                if det_row % 2 == 1:
+                if det_row % 2 == 0:
                     cell.fill = fill_zebra
+
             ws2.cell(row=det_row, column=5).number_format = "#,##0.0"
             ws2.cell(row=det_row, column=6).number_format = "₹#,##0.00"
             ws2.cell(row=det_row, column=7).number_format = "₹#,##0.00"
@@ -1040,7 +1073,7 @@ def render_upload_module():
                 st.download_button(
                     "📥 Download Excel Report",
                     data=build_excel_export(all_results),
-                    file_name="Geeta_Fruit_Vegetables_Suppliers_Bill_Summary.xlsx",
+                    file_name="bill_summary.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 )
             else:
