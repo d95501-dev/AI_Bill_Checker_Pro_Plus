@@ -290,7 +290,7 @@ def render_metrics(df):
 
 def image_to_bytes(image):
     buf = BytesIO()
-    image.save(buf, format="JPEG", quality=95)
+    image.convert("RGB").save(buf, format="JPEG", quality=96, optimize=True)
     return buf.getvalue()
 
 
@@ -298,9 +298,9 @@ def preprocess_for_ocr(image):
     try:
         import cv2
         import numpy as np
-
-        img = np.array(image)
+        img = np.array(image.convert("RGB"))
         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+        gray = cv2.fastNlMeansDenoising(gray, None, 18, 7, 21)
         gray = cv2.GaussianBlur(gray, (3, 3), 0)
         thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 11)
         return Image.fromarray(thresh)
@@ -313,19 +313,53 @@ def convert_pdf_to_images(file_bytes):
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         images = []
         for page in doc:
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            pix = page.get_pixmap(matrix=fitz.Matrix(2.5, 2.5), alpha=False)
             images.append(Image.frombytes("RGB", [pix.width, pix.height], pix.samples))
         doc.close()
         return images
-
     if pdfium is not None:
         pdf = pdfium.PdfDocument(file_bytes)
-        return [pdf[i].render(scale=2).to_pil().convert("RGB") for i in range(len(pdf))]
-
+        return [pdf[i].render(scale=2.5).to_pil().convert("RGB") for i in range(len(pdf))]
     if convert_from_bytes is not None:
-        return convert_from_bytes(file_bytes, dpi=200)
-
+        return convert_from_bytes(file_bytes, dpi=300)
     raise RuntimeError("No PDF rendering library available.")
+
+
+def clean_text(text):
+    text = text or ""
+    text = text.replace("\x0c", "\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def safe_float(value):
+    if value is None:
+        return 0.0
+    s = str(value).strip()
+    s = s.replace("₹", "").replace("Rs.", "").replace("Rs", "").replace(",", "").replace(" ", "")
+    s = re.sub(r"[^0-9.\-]", "", s)
+    try:
+        return float(s) if s not in ("", ".", "-", "-.") else 0.0
+    except Exception:
+        return 0.0
+
+
+def normalize_items(items):
+    cleaned = []
+    if not isinstance(items, list):
+        return cleaned
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        name = re.sub(r"\s+", " ", str(it.get("name") or "").strip())
+        qty = str(it.get("qty") or "").strip()
+        rate = str(it.get("rate") or "").strip()
+        amount = str(it.get("amount") or "").strip()
+        if not name:
+            continue
+        cleaned.append({"name": name[:120], "qty": qty, "rate": rate, "amount": amount})
+    return cleaned[:100]
 
 
 def parse_json_from_response(response_text):
@@ -336,29 +370,146 @@ def parse_json_from_response(response_text):
     return json.loads(raw)
 
 
-def safe_float(value):
-    try:
-        clean_val = str(value).replace(",", "").replace("/", "").replace("-", "").strip()
-        return float(clean_val) if clean_val else 0.0
-    except Exception:
-        return 0.0
+def extract_shop_name(text):
+    text = clean_text(text)
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    ignore = re.compile(r"\b(invoice|bill|gst|date|total|amount|tax|phone|mobile|email|mrp|rate|qty|cash|upi)\b", re.I)
+    for ln in lines[:20]:
+        if len(ln) >= 4 and not ignore.search(ln):
+            if len(re.findall(r"\d", ln)) <= 3:
+                return re.sub(r"\s+", " ", ln)[:100]
+    return "Unknown Shop"
 
 
-def normalize_items(items):
-    if not isinstance(items, list):
-        return []
-    cleaned = []
-    for it in items:
-        if isinstance(it, dict):
-            cleaned.append(
-                {
-                    "name": it.get("name") or "",
-                    "qty": it.get("qty") or "",
-                    "rate": it.get("rate") or "",
-                    "amount": it.get("amount") or "",
-                }
-            )
-    return cleaned
+def extract_gst_number(text):
+    text = text or ""
+    patterns = [r"\bGSTIN[:\s-]*([0-9A-Z]{15})\b", r"\b([0-9A-Z]{2}[0-9A-Z]{13})\b"]
+    for p in patterns:
+        m = re.search(p, text, re.I)
+        if m:
+            val = m.group(1).upper()
+            if len(val) == 15:
+                return val
+    return "N/A"
+
+
+def normalize_date(value):
+    if not value:
+        return None
+    s = str(value).strip().replace(".", "/").replace("-", "/")
+    fmts = ["%Y/%m/%d", "%d/%m/%Y", "%d/%m/%y", "%d %B %Y", "%d %b %Y", "%d %m %Y"]
+    for fmt in fmts:
+        try:
+            dt = datetime.strptime(s, fmt)
+            return dt.strftime("%Y-%m-%d")
+        except Exception:
+            pass
+    return None
+
+
+def extract_bill_date(text):
+    text = clean_text(text)
+    patterns = [
+        r"\bDate[:\s-]*([0-9]{4}[-/][0-9]{2}[-/][0-9]{2})\b",
+        r"\bDate[:\s-]*([0-9]{2}[-/][0-9]{2}[-/][0-9]{2,4})\b",
+        r"\b([0-9]{4}[-/][0-9]{2}[-/][0-9]{2})\b",
+        r"\b([0-9]{2}[-/][0-9]{2}[-/][0-9]{2,4})\b",
+        r"\b([0-9]{1,2}\s+[A-Za-z]{3,9}\s+[0-9]{2,4})\b",
+    ]
+    for p in patterns:
+        m = re.search(p, text, re.I)
+        if m:
+            d = normalize_date(m.group(1))
+            if d:
+                return d
+    return datetime.now().strftime("%Y-%m-%d")
+
+
+def extract_total(text):
+    text = clean_text(text)
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    patterns = [
+        r"(?i)\bgrand\s*total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
+        r"(?i)\bnet\s*total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
+        r"(?i)\bbill\s*amount[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
+        r"(?i)\bamount[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
+        r"(?i)\btotal[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
+    ]
+    candidates = []
+    for p in patterns:
+        for m in re.finditer(p, text):
+            v = safe_float(m.group(1))
+            if v > 0:
+                candidates.append(v)
+    for ln in lines[-10:]:
+        nums = re.findall(r"\d+(?:,\d{3})*(?:\.\d{1,2})?", ln)
+        if nums:
+            last = safe_float(nums[-1])
+            if last > 0:
+                candidates.append(last)
+    return max(candidates) if candidates else 0.0
+
+
+def heuristic_extract_items(text):
+    text = clean_text(text)
+    items = []
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    stop_words = re.compile(r"\b(invoice|bill|gst|date|total|amount|tax|phone|mobile|email|upi|cash|change|mrp)\b", re.I)
+    for ln in lines:
+        if stop_words.search(ln):
+            continue
+        nums = re.findall(r"\d+(?:,\d{3})*(?:\.\d+)?", ln)
+        if len(nums) >= 2:
+            amount = safe_float(nums[-1])
+            rate = safe_float(nums[-2])
+            qty = safe_float(nums[-3]) if len(nums) >= 3 else 0.0
+            name = re.sub(r"\d+(?:,\d{3})*(?:\.\d+)?", " ", ln)
+            name = re.sub(r"[\|\:\-]+", " ", name)
+            name = re.sub(r"\s+", " ", name).strip()
+            if len(name) >= 2 and amount > 0:
+                items.append(
+                    {
+                        "name": name[:120],
+                        "qty": str(qty) if qty > 0 else "",
+                        "rate": str(rate) if rate > 0 else "",
+                        "amount": str(amount),
+                    }
+                )
+    return items[:100]
+
+
+def heuristic_parse_from_text(text):
+    text = clean_text(text)
+    return OCRResult(
+        shop_name=extract_shop_name(text),
+        bill_date=extract_bill_date(text),
+        gst_number=extract_gst_number(text),
+        items=heuristic_extract_items(text),
+        total=extract_total(text),
+        raw_text=text,
+    )
+
+
+def normalize_result(data, fallback_text=""):
+    if not isinstance(data, dict):
+        data = {}
+    raw_text = clean_text(str(data.get("raw_text") or fallback_text or ""))
+    heur = heuristic_parse_from_text(raw_text)
+    shop = data.get("shop_name") or heur.shop_name
+    bill_date = data.get("bill_date") or heur.bill_date
+    gst_number = data.get("gst_number") or heur.gst_number
+    items = data.get("items") or heur.items
+    total = data.get("total") if data.get("total") not in (None, "", "N/A") else heur.total
+    if not normalize_date(bill_date):
+        bill_date = heur.bill_date
+    return {
+        "shop_name": str(shop).strip() or "Unknown Shop",
+        "bill_date": normalize_date(bill_date) or heur.bill_date,
+        "gst_number": str(gst_number).strip() or "N/A",
+        "items": normalize_items(items),
+        "total": safe_float(total),
+        "raw_text": raw_text,
+    }
 
 
 def build_schema_prompt():
@@ -419,92 +570,6 @@ def can_try_gemini():
 def is_gemini_quota_error(err):
     msg = str(err).lower()
     return ("429" in msg) or ("quota" in msg) or ("resource_exhausted" in msg) or ("rate limit" in msg)
-
-
-def heuristic_extract_items(text):
-    items = []
-    for ln in [x.strip() for x in (text or "").splitlines() if x.strip()]:
-        if re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
-            continue
-        m = re.match(r"(.+?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$", ln)
-        if m:
-            items.append(
-                {
-                    "name": m.group(1).strip(),
-                    "qty": m.group(2),
-                    "rate": m.group(3),
-                    "amount": m.group(4),
-                }
-            )
-    return items[:50]
-
-
-def heuristic_parse_from_text(text):
-    text = (text or "").strip()
-    lines = [x.strip() for x in text.splitlines() if x.strip()]
-    if not text:
-        return OCRResult(None, None, None, [], 0.0, "")
-    shop_name = None
-    for ln in lines[:12]:
-        if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
-            shop_name = ln[:80]
-            break
-    gst_number = None
-    bill_date = None
-    total = None
-    for p in [r"\bGSTIN[:\s-]*([0-9A-Z]{15})\b", r"\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z])\b"]:
-        m = re.search(p, text, re.I)
-        if m:
-            gst_number = m.group(1)
-            break
-    for p in [r"\b(\d{2}[/-]\d{2}[/-]\d{2,4})\b", r"\b(\d{4}[/-]\d{2}[/-]\d{2})\b", r"\b(\d{2}\s+[A-Za-z]{3,9}\s+\d{2,4})\b"]:
-        m = re.search(p, text)
-        if m:
-            bill_date = m.group(1)
-            break
-    for p in [
-        r"\bGrand Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
-        r"\bNet Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
-        r"\bTotal[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
-        r"\bAmount[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
-        r"\bBill Amount[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
-    ]:
-        m = re.search(p, text, re.I)
-        if m:
-            total = m.group(1)
-            break
-    if not shop_name:
-        for ln in lines:
-            if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax|phone|mobile|email)\b", ln, re.I):
-                shop_name = ln[:80]
-                break
-    return OCRResult(shop_name, bill_date, gst_number, heuristic_extract_items(text), safe_float(total or 0), text)
-
-
-def normalize_result(data, fallback_text=""):
-    if not isinstance(data, dict):
-        data = {}
-    raw_text = str(data.get("raw_text") or fallback_text or "").strip()
-    if not data.get("shop_name") and raw_text:
-        parsed = heuristic_parse_from_text(raw_text)
-        for k in ["shop_name", "bill_date", "gst_number", "items", "total"]:
-            if not data.get(k):
-                data[k] = getattr(parsed, k)
-    if not data.get("shop_name") and raw_text:
-        for ln in [x.strip() for x in raw_text.splitlines() if x.strip()][:15]:
-            if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax|phone|mobile|email)\b", ln, re.I):
-                data["shop_name"] = ln[:80]
-                break
-    if not data.get("bill_date"):
-        data["bill_date"] = datetime.now().strftime("%Y-%m-%d")
-    if not data.get("gst_number"):
-        data["gst_number"] = "N/A"
-    if not data.get("items"):
-        data["items"] = []
-    if not data.get("total"):
-        data["total"] = "0"
-    data["raw_text"] = raw_text
-    return data
 
 
 def try_gemini(model, image):
@@ -572,7 +637,7 @@ def extract_vision_text(vision_client, image):
         anns = resp.text_annotations
         if anns and getattr(anns[0], "description", ""):
             text = anns[0].description.strip()
-    return text.strip()
+    return clean_text(text)
 
 
 def analyze_with_auto_fallback(model_bundle, image, forced=None):
@@ -589,14 +654,14 @@ def analyze_with_auto_fallback(model_bundle, image, forced=None):
             elif provider == "Google Vision OCR" and model_bundle.get("vision_client"):
                 text = extract_vision_text(model_bundle["vision_client"], image)
                 if text:
-                    return normalize_result(heuristic_parse_from_text(text).__dict__, text)
+                    return normalize_result({}, text)
             elif provider == "Perplexity" and model_bundle.get("perplexity"):
                 return try_perplexity(model_bundle["perplexity"], image)
             elif provider == "OpenAI" and model_bundle.get("openai"):
                 return try_openai(model_bundle["openai"], image)
         except Exception:
             continue
-    return normalize_result(heuristic_parse_from_text("").__dict__, "")
+    return normalize_result({}, "")
 
 
 def insert_bill(shop, date, gst, total, calc_total, status):
@@ -619,7 +684,6 @@ def get_history_df():
 
 def normalize_bill_row(row, fallback_index=1):
     d = row.get("data") or {}
-    raw_text = str(d.get("raw_text") or "").strip()
     items = normalize_items(d.get("items"))
     tmp_df = pd.DataFrame(items)
     calc_total = float(pd.to_numeric(tmp_df["amount"], errors="coerce").fillna(0).sum()) if not tmp_df.empty else 0.0
@@ -639,7 +703,6 @@ def normalize_bill_row(row, fallback_index=1):
         "difference": abs(calc_total - total),
         "status": status,
         "items": items,
-        "raw_text": raw_text,
     }
 
 
@@ -746,16 +809,7 @@ def build_excel_export(results):
 
     normalized = [normalize_bill_row(r, i + 1) for i, r in enumerate(results)]
     for idx, row in enumerate(normalized, 6):
-        values = [
-            idx - 5,
-            row["source"],
-            row["shop_name"],
-            row["bill_date"],
-            row["bill_total"],
-            row["calculated_total"],
-            row["difference"],
-            row["status"],
-        ]
+        values = [idx - 5, row["source"], row["shop_name"], row["bill_date"], row["bill_total"], row["calculated_total"], row["difference"], row["status"]]
         for cidx, val in enumerate(values, 1):
             cell = ws1.cell(row=idx, column=cidx, value=val)
             cell.font = font_regular
@@ -874,12 +928,7 @@ def render_upload_module():
     tabs = st.tabs(["📷 Scan / Upload", "🕘 History", "⚙️ Settings"])
 
     with tabs[0]:
-        st.session_state.selected_provider = st.selectbox(
-            "Select OCR Provider",
-            PROVIDERS,
-            index=PROVIDERS.index(st.session_state.get("selected_provider", "Gemini")),
-        )
-
+        st.session_state.selected_provider = st.selectbox("Select OCR Provider", PROVIDERS, index=PROVIDERS.index(st.session_state.get("selected_provider", "Gemini")))
         uploaded_files = st.file_uploader("Upload Bill Images or PDFs", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
 
         c1, c2 = st.columns(2)
@@ -905,6 +954,7 @@ def render_upload_module():
                 file_key = f"{uploaded_file.name}_{uploaded_file.size}"
                 if file_key in st.session_state.processed_files:
                     continue
+
                 file_bytes = uploaded_file.getvalue()
 
                 if uploaded_file.name.lower().endswith(".pdf"):
