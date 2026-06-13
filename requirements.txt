@@ -10,3 +10,4 @@ pymupdf
 pypdfium2
 opencv-python
 numpy
+PyMuPDF
