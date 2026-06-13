@@ -415,7 +415,7 @@ def preprocess_for_ocr(image):
     try:
         import cv2
         import numpy as np
-        img = np.array(image)
+        img = np.array(image.convert("RGB"))
         gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
         gray = cv2.GaussianBlur(gray, (3, 3), 0)
         thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 11)
@@ -428,7 +428,7 @@ def convert_pdf_to_images(file_bytes):
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         images = []
         for page in doc:
-            pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            pix = page.get_pixmap(matrix=fitz.Matrix(3, 3), alpha=False)
             images.append(Image.frombytes("RGB", [pix.width, pix.height], pix.samples))
         doc.close()
         return images
@@ -436,10 +436,10 @@ def convert_pdf_to_images(file_bytes):
         pdf = pdfium.PdfDocument(file_bytes)
         images = []
         for i in range(len(pdf)):
-            images.append(pdf[i].render(scale=2).to_pil().convert("RGB"))
+            images.append(pdf[i].render(scale=3).to_pil().convert("RGB"))
         return images
     if convert_from_bytes is not None:
-        return convert_from_bytes(file_bytes, dpi=200)
+        return convert_from_bytes(file_bytes, dpi=300)
     raise RuntimeError("No PDF rendering library available.")
 
 def extract_vision_text(vision_client, image):
@@ -531,9 +531,7 @@ def heuristic_parse_from_text(text):
 def normalize_result(data, fallback_text=""):
     if not isinstance(data, dict):
         data = {}
-    
     raw_text = str(data.get("raw_text") or fallback_text or "").strip()
-    
     if not data.get("items") or len(data["items"]) == 0:
         if raw_text:
             parsed = heuristic_parse_from_text(raw_text)
@@ -542,7 +540,6 @@ def normalize_result(data, fallback_text=""):
             if not data.get("bill_date"): data["bill_date"] = parsed.get("bill_date")
             if not data.get("gst_number"): data["gst_number"] = parsed.get("gst_number")
             if not data.get("total"): data["total"] = parsed.get("total")
-
     if not data.get("shop_name"):
         data["shop_name"] = "Unknown Shop"
     if not data.get("bill_date"):
@@ -551,7 +548,6 @@ def normalize_result(data, fallback_text=""):
         data["gst_number"] = "N/A"
     if not data.get("total"):
         data["total"] = "0"
-        
     data["raw_text"] = raw_text
     return data
 
@@ -642,14 +638,9 @@ def sanitize_sheet_name(name, fallback="Sheet"):
     return (name[:31] or fallback)
 
 def build_excel_export(results):
-    """
-    CRITICAL FIX: Remoted the hardcoded 'Shri Bala Ji Dairy' mock data.
-    Now generates sheets dynamic based on the actual extracted AI results.
-    """
     buffer = BytesIO()
     wb = openpyxl.Workbook()
-    
-    # 1st Sheet: Dashboard Summary
+
     ws1 = wb.active
     ws1.title = "Summary Dashboard"
     ws1.views.sheetView[0].showGridLines = True
@@ -687,7 +678,6 @@ def build_excel_export(results):
         cell.fill = fill_header
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    # 2nd Sheet: Detailed Items Breakdown
     ws2 = wb.create_sheet(title="Detailed Transactions")
     ws2.views.sheetView[0].showGridLines = True
     headers_det = ["Source File", "Shop Name", "Date", "Item Name / Particulars", "Qty", "Rate", "Extracted Amount"]
@@ -706,14 +696,13 @@ def build_excel_export(results):
         page = item.get("page", 1)
         shop = d.get("shop_name", "Unknown Shop")
         date_str = d.get("bill_date", "N/A")
-        
+
         items = normalize_items(d.get("items"))
         calc_total = 0.0
         for it in items:
             amt = safe_float(it.get("amount")) or (safe_float(it.get("qty")) * safe_float(it.get("rate")))
             calc_total += amt
-            
-            # Populate Detailed Sheet
+
             ws2.cell(row=det_idx, column=1, value=source)
             ws2.cell(row=det_idx, column=2, value=shop)
             ws2.cell(row=det_idx, column=3, value=date_str)
@@ -725,40 +714,40 @@ def build_excel_export(results):
                 cell = ws2.cell(row=det_idx, column=c)
                 cell.font = font_regular
                 cell.border = border_all
-                if det_idx % 2 == 1: cell.fill = fill_zebra
+                if det_idx % 2 == 1:
+                    cell.fill = fill_zebra
             det_idx += 1
 
         orig_total = safe_float(d.get("total")) or calc_total
         status = "Needs Review" if orig_total <= 0 else ("Verified Matched" if abs(calc_total - orig_total) < 1 else "Mismatch")
 
-        # Populate Summary Sheet Row
-        ws1.cell(row=row_idx, column=1, value=idx+1).alignment = Alignment(horizontal="center")
+        ws1.cell(row=row_idx, column=1, value=idx + 1).alignment = Alignment(horizontal="center")
         ws1.cell(row=row_idx, column=2, value=f"{source} (P.{page})")
         ws1.cell(row=row_idx, column=3, value=shop)
         ws1.cell(row=row_idx, column=4, value=date_str).alignment = Alignment(horizontal="center")
-        
+
         c_orig = ws1.cell(row=row_idx, column=5, value=orig_total)
         c_orig.number_format = "₹#,##0.00"
-        
+
         c_calc = ws1.cell(row=row_idx, column=6, value=calc_total)
         c_calc.number_format = "₹#,##0.00"
-        
+
         ws1.cell(row=row_idx, column=7, value=status).alignment = Alignment(horizontal="center")
 
         for c in range(1, 8):
             cell = ws1.cell(row=row_idx, column=c)
             cell.font = font_regular
             cell.border = border_all
-            if row_idx % 2 == 1: cell.fill = fill_zebra
+            if row_idx % 2 == 1:
+                cell.fill = fill_zebra
         row_idx += 1
 
-    # Summary Totals
     if row_idx > 6:
         ws1.cell(row=row_idx, column=3, value="Grand Total").font = font_bold
         ws1.cell(row=row_idx, column=5, value=f"=SUM(E6:E{row_idx-1})").font = font_bold
         ws1.cell(row=row_idx, column=5).number_format = "₹#,##0.00"
         ws1.cell(row=row_idx, column=5).border = border_total
-        
+
         ws1.cell(row=row_idx, column=6, value=f"=SUM(F6:F{row_idx-1})").font = font_bold
         ws1.cell(row=row_idx, column=6).number_format = "₹#,##0.00"
         ws1.cell(row=row_idx, column=6).border = border_total
@@ -776,15 +765,15 @@ def build_batch_summary(results):
             calc_total = 0.0
             for it in items:
                 calc_total += safe_float(it.get("amount")) or (safe_float(it.get("qty")) * safe_float(it.get("rate")))
-                
+
             total = safe_float(d.get("total"))
             if total == 0.0 and calc_total > 0:
                 total = calc_total
-                
+
             shop = str(d.get("shop_name") or "Unknown Shop").strip()
             bill_date = str(d.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
             status = "Needs Review" if total <= 0 else ("Matched" if abs(calc_total - total) < 1 else "Mismatch")
-            
+
             try:
                 insert_bill(shop, bill_date, d.get("gst_number"), total, calc_total, status)
             except Exception:
@@ -904,14 +893,14 @@ def render_upload_module():
                     all_results.append({"page": 1, "source": uploaded_file.name, "data": data})
 
                 st.session_state.processed_files.add(file_key)
-            
+
             if all_results:
                 st.session_state.current_results.extend(all_results)
 
         if st.session_state.current_results:
             df = build_batch_summary(st.session_state.current_results)
             render_metrics(df)
-            
+
             st.markdown('<div class="section-card">', unsafe_allow_html=True)
             st.dataframe(df, use_container_width=True)
             st.markdown('</div>', unsafe_allow_html=True)
