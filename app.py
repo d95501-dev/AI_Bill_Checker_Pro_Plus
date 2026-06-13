@@ -109,6 +109,7 @@ def init_runtime_state():
         "gemini_available": True,
         "last_gemini_error_time": None,
         "gemini_cooldown_seconds": 900,
+        "current_results": []
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -528,16 +529,11 @@ def heuristic_parse_from_text(text):
     }
 
 def normalize_result(data, fallback_text=""):
-    """
-    CRITICAL FIX: AI द्वारा दिए गए सॉलिड स्ट्रक्चर्ड डेटा 'items' को सुरक्षित रखता है
-    और केवल तभी हीउरिस्टिक फॉलबैक का उपयोग करता है जब डेटा बिलकुल गायब हो।
-    """
     if not isinstance(data, dict):
         data = {}
     
     raw_text = str(data.get("raw_text") or fallback_text or "").strip()
     
-    # अगर AI से आइटम्स मिल गए हैं तो पुरानी हीउरिस्टिक लगाकर उसे ओवरराइड न करें
     if not data.get("items") or len(data["items"]) == 0:
         if raw_text:
             parsed = heuristic_parse_from_text(raw_text)
@@ -646,8 +642,14 @@ def sanitize_sheet_name(name, fallback="Sheet"):
     return (name[:31] or fallback)
 
 def build_excel_export(results):
+    """
+    CRITICAL FIX: Remoted the hardcoded 'Shri Bala Ji Dairy' mock data.
+    Now generates sheets dynamic based on the actual extracted AI results.
+    """
     buffer = BytesIO()
     wb = openpyxl.Workbook()
+    
+    # 1st Sheet: Dashboard Summary
     ws1 = wb.active
     ws1.title = "Summary Dashboard"
     ws1.views.sheetView[0].showGridLines = True
@@ -670,89 +672,96 @@ def build_excel_export(results):
     border_all = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
     border_total = Border(top=Side(border_style="thin", color="000000"), bottom=Side(border_style="double", color="000000"))
 
-    ws1["A1"] = "SHRI BALA JI DAIRY - INVOICE SUMMARY & AUDIT"
+    ws1["A1"] = "AI OCR PROCESSOR - INVOICE BATCH SUMMARY"
     ws1["A1"].font = font_title
-    ws1["A2"] = "Client: Director, NIT Kurukshetra (K.K.R.) | Period: April 2026"
+    ws1["A2"] = f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
     ws1["A2"].font = Font(name="Calibri", size=11, italic=True)
 
-    ws1["A4"] = "1. Statement / Bill-wise Breakdown"
+    ws1["A4"] = "1. Document-wise Statement Breakdown"
     ws1["A4"].font = font_section
 
-    headers_bill = ["Bill No.", "Period / Dates Covered", "Original Invoice Total", "Calculated Total", "Status / Audit"]
+    headers_bill = ["Sr No.", "Source File / Page", "Shop / Vendor Name", "Date", "Original Total", "Calculated Total", "Status"]
     for col_num, h in enumerate(headers_bill, 1):
         cell = ws1.cell(row=5, column=col_num, value=h)
         cell.font = font_header
         cell.fill = fill_header
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    bill_summaries = [
-        (705, "09/04/26 - 13/04/26", 4142),
-        (707, "19/04/26 - 21/04/26", 2856),
-        (708, "22/04/26 - 24/04/26", 1778),
-        (739, "25/04/26 - 28/04/26", 2568),
-        (710, "29/04/26 - 30/04/26", 1432),
-    ]
-
-    for idx, (b_no, period, orig_total) in enumerate(bill_summaries, 6):
-        ws1.cell(row=idx, column=1, value=b_no).alignment = Alignment(horizontal="center")
-        ws1.cell(row=idx, column=2, value=period).alignment = Alignment(horizontal="left")
-        c_orig = ws1.cell(row=idx, column=3, value=orig_total)
-        c_orig.number_format = "₹#,##0"
-        c_orig.alignment = Alignment(horizontal="right")
-        c_calc = ws1.cell(row=idx, column=4, value=f"=SUMIF('Detailed Transactions'!A:A, A{idx}, 'Detailed Transactions'!G:G)")
-        c_calc.number_format = "₹#,##0"
-        c_calc.alignment = Alignment(horizontal="right")
-        c_status = ws1.cell(row=idx, column=5, value=f'=IF(C{idx}=D{idx}, "Verified Matched", "Mismatch")')
-        c_status.alignment = Alignment(horizontal="center")
-        for c in range(1, 6):
-            cell = ws1.cell(row=idx, column=c)
-            cell.font = font_regular
-            cell.border = border_all
-            if idx % 2 == 1: cell.fill = fill_zebra
-
-    tot_row = 11
-    ws1.cell(row=tot_row, column=1, value="Grand Total").font = font_bold
-    ws1.cell(row=tot_row, column=3, value="=SUM(C6:C10)").font = font_bold
-    ws1.cell(row=tot_row, column=3).number_format = "₹#,##0"
-    ws1.cell(row=tot_row, column=3).border = border_total
-    ws1.cell(row=tot_row, column=4, value="=SUM(D6:D10)").font = font_bold
-    ws1.cell(row=tot_row, column=4).number_format = "₹#,##0"
-    ws1.cell(row=tot_row, column=4).border = border_total
-
+    # 2nd Sheet: Detailed Items Breakdown
     ws2 = wb.create_sheet(title="Detailed Transactions")
     ws2.views.sheetView[0].showGridLines = True
-    headers_det = ["Bill No", "Date", "Particulars (Hindi)", "Particulars (English)", "Qty (Kg)", "Rate (₹)", "Amount (₹)"]
+    headers_det = ["Source File", "Shop Name", "Date", "Item Name / Particulars", "Qty", "Rate", "Extracted Amount"]
     for col_num, h in enumerate(headers_det, 1):
         cell = ws2.cell(row=1, column=col_num, value=h)
         cell.font = font_header
         cell.fill = fill_header
         cell.alignment = Alignment(horizontal="center", vertical="center")
 
-    compiled_data = [
-        {"Bill No": 705, "Date": "2026-04-09", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 8.0, "Rate": 58},
-        {"Bill No": 705, "Date": "2026-04-09", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 8.0, "Rate": 60},
-        {"Bill No": 705, "Date": "2026-04-09", "Item (Hindi)": "पनीर", "Item (English)": "Paneer", "Qty (Kg)": 3.5, "Rate": 300},
-        {"Bill No": 705, "Date": "2026-04-11", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 2.0, "Rate": 58},
-        {"Bill No": 705, "Date": "2026-04-11", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 4.0, "Rate": 60},
-        {"Bill No": 705, "Date": "2026-04-11", "Item (Hindi)": "पनीर", "Item (English)": "Paneer", "Qty (Kg)": 2.0, "Rate": 300},
-        {"Bill No": 705, "Date": "2026-04-13", "Item (Hindi)": "दूध", "Item (English)": "Milk", "Qty (Kg)": 4.0, "Rate": 58},
-        {"Bill No": 705, "Date": "2026-04-13", "Item (Hindi)": "दही", "Item (English)": "Curd", "Qty (Kg)": 6.0, "Rate": 60},
-        {"Bill No": 705, "Date": "2026-04-13", "Item (Hindi)": "पनीर", "Item (English)": "Paneer", "Qty (Kg)": 2.0, "Rate": 300},
-    ]
+    det_idx = 2
+    row_idx = 6
 
-    for idx, row_data in enumerate(compiled_data, 2):
-        ws2.cell(row=idx, column=1, value=row_data["Bill No"]).alignment = Alignment(horizontal="center")
-        ws2.cell(row=idx, column=2, value=row_data["Date"]).alignment = Alignment(horizontal="center")
-        ws2.cell(row=idx, column=3, value=row_data["Item (Hindi)"]).alignment = Alignment(horizontal="left")
-        ws2.cell(row=idx, column=4, value=row_data["Item (English)"]).alignment = Alignment(horizontal="left")
-        ws2.cell(row=idx, column=5, value=row_data["Qty (Kg)"]).number_format = "#,##0.0"
-        ws2.cell(row=idx, column=6, value=row_data["Rate"]).number_format = "₹#,##0"
-        ws2.cell(row=idx, column=7, value=f"=E{idx}*F{idx}").number_format = "₹#,##0"
+    for idx, item in enumerate(results):
+        d = item.get("data") or {}
+        source = item.get("source", "Unknown")
+        page = item.get("page", 1)
+        shop = d.get("shop_name", "Unknown Shop")
+        date_str = d.get("bill_date", "N/A")
+        
+        items = normalize_items(d.get("items"))
+        calc_total = 0.0
+        for it in items:
+            amt = safe_float(it.get("amount")) or (safe_float(it.get("qty")) * safe_float(it.get("rate")))
+            calc_total += amt
+            
+            # Populate Detailed Sheet
+            ws2.cell(row=det_idx, column=1, value=source)
+            ws2.cell(row=det_idx, column=2, value=shop)
+            ws2.cell(row=det_idx, column=3, value=date_str)
+            ws2.cell(row=det_idx, column=4, value=it.get("name", "Unknown"))
+            ws2.cell(row=det_idx, column=5, value=safe_float(it.get("qty")))
+            ws2.cell(row=det_idx, column=6, value=safe_float(it.get("rate")))
+            ws2.cell(row=det_idx, column=7, value=amt).number_format = "₹#,##0.00"
+            for c in range(1, 8):
+                cell = ws2.cell(row=det_idx, column=c)
+                cell.font = font_regular
+                cell.border = border_all
+                if det_idx % 2 == 1: cell.fill = fill_zebra
+            det_idx += 1
+
+        orig_total = safe_float(d.get("total")) or calc_total
+        status = "Needs Review" if orig_total <= 0 else ("Verified Matched" if abs(calc_total - orig_total) < 1 else "Mismatch")
+
+        # Populate Summary Sheet Row
+        ws1.cell(row=row_idx, column=1, value=idx+1).alignment = Alignment(horizontal="center")
+        ws1.cell(row=row_idx, column=2, value=f"{source} (P.{page})")
+        ws1.cell(row=row_idx, column=3, value=shop)
+        ws1.cell(row=row_idx, column=4, value=date_str).alignment = Alignment(horizontal="center")
+        
+        c_orig = ws1.cell(row=row_idx, column=5, value=orig_total)
+        c_orig.number_format = "₹#,##0.00"
+        
+        c_calc = ws1.cell(row=row_idx, column=6, value=calc_total)
+        c_calc.number_format = "₹#,##0.00"
+        
+        ws1.cell(row=row_idx, column=7, value=status).alignment = Alignment(horizontal="center")
+
         for c in range(1, 8):
-            cell = ws2.cell(row=idx, column=c)
+            cell = ws1.cell(row=row_idx, column=c)
             cell.font = font_regular
             cell.border = border_all
-            if idx % 2 == 1: cell.fill = fill_zebra
+            if row_idx % 2 == 1: cell.fill = fill_zebra
+        row_idx += 1
+
+    # Summary Totals
+    if row_idx > 6:
+        ws1.cell(row=row_idx, column=3, value="Grand Total").font = font_bold
+        ws1.cell(row=row_idx, column=5, value=f"=SUM(E6:E{row_idx-1})").font = font_bold
+        ws1.cell(row=row_idx, column=5).number_format = "₹#,##0.00"
+        ws1.cell(row=row_idx, column=5).border = border_total
+        
+        ws1.cell(row=row_idx, column=6, value=f"=SUM(F6:F{row_idx-1})").font = font_bold
+        ws1.cell(row=row_idx, column=6).number_format = "₹#,##0.00"
+        ws1.cell(row=row_idx, column=6).border = border_total
 
     wb.save(buffer)
     buffer.seek(0)
@@ -776,7 +785,6 @@ def build_batch_summary(results):
             bill_date = str(d.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
             status = "Needs Review" if total <= 0 else ("Matched" if abs(calc_total - total) < 1 else "Mismatch")
             
-            # ऑटो-इंसर्ट बिल हिस्ट्री डेटाबेस में
             try:
                 insert_bill(shop, bill_date, d.get("gst_number"), total, calc_total, status)
             except Exception:
@@ -862,6 +870,7 @@ def render_upload_module():
 
         if clear_state:
             st.session_state.processed_files = set()
+            st.session_state.current_results = []
             st.rerun()
 
         model_bundle = {
@@ -895,36 +904,40 @@ def render_upload_module():
                     all_results.append({"page": 1, "source": uploaded_file.name, "data": data})
 
                 st.session_state.processed_files.add(file_key)
-
+            
             if all_results:
-                df = build_batch_summary(all_results)
-                render_metrics(df)
-                st.markdown('<div class="section-card">', unsafe_allow_html=True)
-                st.dataframe(df, use_container_width=True)
-                st.markdown('</div>', unsafe_allow_html=True)
+                st.session_state.current_results.extend(all_results)
 
-                # डिटेल्ड आइटम्स को यूज़र इंटरफ़ेस पर दिखाने के लिए सेक्शन
-                st.subheader("📦 Extracted Bill Items Detail")
-                for res in all_results:
-                    if res.get("data") and res["data"].get("items"):
-                        st.markdown(f"**File: {res['source']} (Page {res['page']})**")
-                        st.dataframe(pd.DataFrame(res["data"]["items"]), use_container_width=True)
+        if st.session_state.current_results:
+            df = build_batch_summary(st.session_state.current_results)
+            render_metrics(df)
+            
+            st.markdown('<div class="section-card">', unsafe_allow_html=True)
+            st.dataframe(df, use_container_width=True)
+            st.markdown('</div>', unsafe_allow_html=True)
 
-                summary_text = make_share_text(df)
-                s1, s2, s3 = st.columns(3)
-                with s1: st.link_button("📱 Share on WhatsApp", share_whatsapp(summary_text), use_container_width=True)
-                with s2: st.link_button("✈️ Share on Telegram", share_telegram(summary_text), use_container_width=True)
-                with s3: st.link_button("📧 Share by Email", share_email(summary_text), use_container_width=True)
+            st.subheader("📦 Extracted Bill Items Detail")
+            for res in st.session_state.current_results:
+                if res.get("data") and res["data"].get("items"):
+                    st.markdown(f"**File: {res['source']} (Page {res['page']})**")
+                    st.dataframe(pd.DataFrame(res["data"]["items"]), use_container_width=True)
 
-                excel_data = build_excel_export(all_results)
-                st.download_button(
-                    "📥 Download Excel Report",
-                    data=excel_data,
-                    file_name="Shri_Bala_Ji_Dairy_Bill_Summary.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+            summary_text = make_share_text(df)
+            s1, s2, s3 = st.columns(3)
+            with s1: st.link_button("📱 Share on WhatsApp", share_whatsapp(summary_text), use_container_width=True)
+            with s2: st.link_button("✈️ Share on Telegram", share_telegram(summary_text), use_container_width=True)
+            with s3: st.link_button("📧 Share by Email", share_email(summary_text), use_container_width=True)
+
+            excel_data = build_excel_export(st.session_state.current_results)
+            st.download_button(
+                "📥 Download Excel Report",
+                data=excel_data,
+                file_name="AI_Processed_Bills_Summary.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
         else:
-            st.info("Upload images or PDFs, then click Process All Files.")
+            if not uploaded_files:
+                st.info("Upload images or PDFs, then click Process All Files.")
 
     with tabs[1]:
         st.subheader("Processing History")
