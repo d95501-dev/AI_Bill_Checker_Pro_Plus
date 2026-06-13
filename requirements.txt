@@ -8,5 +8,8 @@ google-cloud-vision
 pdf2image
 pymupdf
 pypdfium2
-opencv-python
+opencv-python-headless
 numpy
+google-auth
+google-api-python-client
+boto3
