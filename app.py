@@ -640,7 +640,7 @@ def sanitize_sheet_name(name, fallback="Sheet"):
 def build_excel_export(results):
     buffer = BytesIO()
     wb = openpyxl.Workbook()
-
+    
     ws1 = wb.active
     ws1.title = "Summary Dashboard"
     ws1.views.sheetView[0].showGridLines = True
@@ -696,13 +696,13 @@ def build_excel_export(results):
         page = item.get("page", 1)
         shop = d.get("shop_name", "Unknown Shop")
         date_str = d.get("bill_date", "N/A")
-
+        
         items = normalize_items(d.get("items"))
         calc_total = 0.0
         for it in items:
             amt = safe_float(it.get("amount")) or (safe_float(it.get("qty")) * safe_float(it.get("rate")))
             calc_total += amt
-
+            
             ws2.cell(row=det_idx, column=1, value=source)
             ws2.cell(row=det_idx, column=2, value=shop)
             ws2.cell(row=det_idx, column=3, value=date_str)
@@ -714,8 +714,7 @@ def build_excel_export(results):
                 cell = ws2.cell(row=det_idx, column=c)
                 cell.font = font_regular
                 cell.border = border_all
-                if det_idx % 2 == 1:
-                    cell.fill = fill_zebra
+                if det_idx % 2 == 1: cell.fill = fill_zebra
             det_idx += 1
 
         orig_total = safe_float(d.get("total")) or calc_total
@@ -725,21 +724,20 @@ def build_excel_export(results):
         ws1.cell(row=row_idx, column=2, value=f"{source} (P.{page})")
         ws1.cell(row=row_idx, column=3, value=shop)
         ws1.cell(row=row_idx, column=4, value=date_str).alignment = Alignment(horizontal="center")
-
+        
         c_orig = ws1.cell(row=row_idx, column=5, value=orig_total)
         c_orig.number_format = "₹#,##0.00"
-
+        
         c_calc = ws1.cell(row=row_idx, column=6, value=calc_total)
         c_calc.number_format = "₹#,##0.00"
-
+        
         ws1.cell(row=row_idx, column=7, value=status).alignment = Alignment(horizontal="center")
 
         for c in range(1, 8):
             cell = ws1.cell(row=row_idx, column=c)
             cell.font = font_regular
             cell.border = border_all
-            if row_idx % 2 == 1:
-                cell.fill = fill_zebra
+            if row_idx % 2 == 1: cell.fill = fill_zebra
         row_idx += 1
 
     if row_idx > 6:
@@ -747,7 +745,7 @@ def build_excel_export(results):
         ws1.cell(row=row_idx, column=5, value=f"=SUM(E6:E{row_idx-1})").font = font_bold
         ws1.cell(row=row_idx, column=5).number_format = "₹#,##0.00"
         ws1.cell(row=row_idx, column=5).border = border_total
-
+        
         ws1.cell(row=row_idx, column=6, value=f"=SUM(F6:F{row_idx-1})").font = font_bold
         ws1.cell(row=row_idx, column=6).number_format = "₹#,##0.00"
         ws1.cell(row=row_idx, column=6).border = border_total
@@ -765,15 +763,15 @@ def build_batch_summary(results):
             calc_total = 0.0
             for it in items:
                 calc_total += safe_float(it.get("amount")) or (safe_float(it.get("qty")) * safe_float(it.get("rate")))
-
+                
             total = safe_float(d.get("total"))
             if total == 0.0 and calc_total > 0:
                 total = calc_total
-
+                
             shop = str(d.get("shop_name") or "Unknown Shop").strip()
             bill_date = str(d.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
             status = "Needs Review" if total <= 0 else ("Matched" if abs(calc_total - total) < 1 else "Mismatch")
-
+            
             try:
                 insert_bill(shop, bill_date, d.get("gst_number"), total, calc_total, status)
             except Exception:
@@ -883,6 +881,7 @@ def render_upload_module():
                     try:
                         pages = convert_pdf_to_images(file_bytes)
                         for i, img in enumerate(pages):
+                            img = preprocess_for_ocr(img)
                             data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
                             all_results.append({"page": i + 1, "source": uploaded_file.name, "data": data})
                     except Exception as e:
@@ -893,14 +892,14 @@ def render_upload_module():
                     all_results.append({"page": 1, "source": uploaded_file.name, "data": data})
 
                 st.session_state.processed_files.add(file_key)
-
+            
             if all_results:
                 st.session_state.current_results.extend(all_results)
 
         if st.session_state.current_results:
             df = build_batch_summary(st.session_state.current_results)
             render_metrics(df)
-
+            
             st.markdown('<div class="section-card">', unsafe_allow_html=True)
             st.dataframe(df, use_container_width=True)
             st.markdown('</div>', unsafe_allow_html=True)
