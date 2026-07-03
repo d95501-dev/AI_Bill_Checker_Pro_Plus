@@ -350,15 +350,22 @@ def validate_gst(gst_str):
 def normalize_items(items):
     if not isinstance(items, list):
         return []
+
     cleaned = []
+
     for it in items:
-        if isinstance(it, dict):
-            cleaned.append({
-                "name": it.get("name") or "Unknown Item",
-                "qty": it.get("qty") or "1",
-                "rate": it.get("rate") or "0",
-                "amount": it.get("amount") or "0"
-            })
+        qty = str(it.get("qty", "")).strip()
+
+        if not qty or qty.lower() in ["none", "null"]:
+            qty = "1"
+
+        cleaned.append({
+            "name": it.get("name") or "Unknown Item",
+            "qty": qty,
+            "rate": it.get("rate") or "0",
+            "amount": it.get("amount") or "0"
+        })
+
     return cleaned
 
 def parse_json_from_response(response_text):
@@ -388,6 +395,23 @@ def is_gemini_quota_error(err):
 
 def build_schema_prompt():
     return """
+    IMPORTANT:
+
+Quantity must NEVER be blank.
+
+If quantity is missing:
+- infer it from the invoice row
+- otherwise use 1
+
+Extract EVERY item visible in the invoice.
+
+Do not stop after the first item.
+
+Return qty, rate and amount for each row.
+
+For PDFs containing multiple bills on the same page,
+extract all visible bills and all line items.
+
 You are a expert invoice extraction specialist. 
 Return ONLY a valid JSON object matching the schema below. 
 Do not include any explanation or backticks.
