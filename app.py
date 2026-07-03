@@ -503,7 +503,7 @@ def heuristic_parse_from_text(text):
 
     total_patterns = [
         r"\bGrand Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
-        r"\bNet Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
+        <font color="#990000">r"\bNet Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",</font>
         r"\bTotal[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
         r"\bAmount[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
     ]
@@ -553,7 +553,6 @@ def normalize_result(data, fallback_text=""):
 
 def try_gemini(model, image):
     try:
-        # Safe image format parsing for Google GenAI SDK
         img_payload = {"data": image_to_bytes(image), "mime_type": "image/jpeg"}
         resp = model.generate_content(
             [build_schema_prompt(), img_payload],
@@ -626,9 +625,9 @@ def insert_bill(shop, date, gst, total, calc_total, status):
     with sqlite3.connect(DB_PATH, timeout=30) as conn:
         conn.execute(
             """
-            INSERT OR IGNORE INTO bills
+            INSERT OR REPLACE INTO bills
             (shop_name, bill_date, gst_number, total, calculated_total, status, timestamp)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            values (?, ?, ?, ?, ?, ?, ?)
             """,
             (shop, date, gst, float(total), float(calc_total), status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
         )
@@ -745,7 +744,6 @@ def build_excel_export(results):
     if row_idx > 6:
         ws1.cell(row=row_idx, column=3, value="Grand Total").font = font_bold
         
-        # Explicitly setting formulas for OpenPyXL execution
         cell_sum_e = ws1.cell(row=row_idx, column=5)
         cell_sum_e.value = f"=SUM(E6:E{row_idx-1})"
         cell_sum_e.font = font_bold
@@ -842,124 +840,37 @@ def render_upload_module():
                 <p>Automated structural data parsing pipeline powered by multiple providers.</p>
             </div>
             <div class="csc-meta-badge">📍 <b>Deep CSC</b><br>👤 Owner: Deepak | ID: 256423250015</div>
-            <div class="branding-badge">Deep CSC AI</div>
         </div>
     """, unsafe_allow_html=True)
 
-    tabs = st.tabs(["📷 Scan / Upload", "🕘 History", "⚙️ Settings"])
-
-    with tabs[0]:
-        providers = ["Gemini", "Google Vision OCR", "Perplexity", "OpenAI"]
-        st.session_state.selected_provider = st.selectbox("Select OCR Provider", providers, index=providers.index("Gemini"), key="provider_selectbox")
-
-        uploaded_files = st.file_uploader(
-            "Upload Bill Images or PDFs",
-            type=["jpg", "jpeg", "png", "pdf"],
-            accept_multiple_files=True,
-            key="bill_uploader",
-        )
-
-        col_a, col_b = st.columns(2)
-        with col_a: process_now = st.button("Process All Files", use_container_width=True)
-        with col_b: clear_state = st.button("Clear Uploaded / Processed Files", use_container_width=True)
-
-        if clear_state:
-            st.session_state.processed_files = set()
-            st.session_state.current_results = []
-            st.rerun()
-
-        model_bundle = {
-            "vision_client": setup_google_vision(),
-            "gemini": setup_gemini(),
-            "perplexity": setup_perplexity(),
-            "openai": setup_openai(),
-        }
-
-        if uploaded_files and process_now:
-            all_results = []
-            for uploaded_file in uploaded_files:
-                file_key = f"{uploaded_file.name}_{uploaded_file.size}"
-                if file_key in st.session_state.processed_files:
-                    continue
-
-                file_bytes = uploaded_file.getvalue()
-                name_lower = uploaded_file.name.lower()
-
-                if name_lower.endswith(".pdf"):
-                    try:
-                        pages = convert_pdf_to_images(file_bytes)
-                        for i, img in enumerate(pages):
-                            img = preprocess_for_ocr(img)
-                            data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
-                            all_results.append({"page": i + 1, "source": uploaded_file.name, "data": data})
-                    except Exception as e:
-                        st.error(f"Error processing {uploaded_file.name}: {e}")
-                else:
-                    img = Image.open(BytesIO(file_bytes)).convert("RGB")
-                    data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
-                    all_results.append({"page": 1, "source": uploaded_file.name, "data": data})
-
-                st.session_state.processed_files.add(file_key)
-            
-            if all_results:
-                st.session_state.current_results.extend(all_results)
-
-        if st.session_state.current_results:
-            df = build_batch_summary(st.session_state.current_results)
-            render_metrics(df)
-            
-            st.markdown('<div class="section-card">', unsafe_allow_html=True)
-            st.dataframe(df, use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
-
-            st.subheader("📦 Extracted Bill Items Detail")
-            for res in st.session_state.current_results:
-                if res.get("data") and res["data"].get("items"):
-                    st.markdown(f"**File: {res['source']} (Page {res['page']})**")
-                    st.dataframe(pd.DataFrame(res["data"]["items"]), use_container_width=True)
-
-            summary_text = make_share_text(df)
-            s1, s2, s3 = st.columns(3)
-            with s1: st.link_button("📱 Share on WhatsApp", share_whatsapp(summary_text), use_container_width=True)
-            with s2: st.link_button("✈️ Share on Telegram", share_telegram(summary_text), use_container_width=True)
-            with s3: st.link_button("📧 Share by Email", share_email(summary_text), use_container_width=True)
-
-            excel_data = build_excel_export(st.session_state.current_results)
-            st.download_button(
-                "📥 Download Excel Report",
-                data=excel_data,
-                file_name="AI_Processed_Bills_Summary.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            )
-        else:
-            if not uploaded_files:
-                st.info("Upload images or PDFs, then click Process All Files.")
-
-    with tabs[1]:
-        st.subheader("Processing History")
-        with sqlite3.connect(DB_PATH) as conn:
-            history_df = pd.read_sql_query("SELECT * FROM bills ORDER BY timestamp DESC", conn)
-        st.dataframe(history_df, use_container_width=True)
-
-    with tabs[2]:
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        render_theme_toggle("settings")
-        st.markdown('</div>', unsafe_allow_html=True)
-
+# Main Application Execution Logic
 def main():
     setup_page()
     init_db()
     init_auth()
     init_runtime_state()
     apply_theme_css()
-    apply_css()
-
+    
     if not st.session_state.logged_in:
         do_login()
-    else:
-        render_upload_module()
-        if st.sidebar.button("Logout"):
-            terminate_session()
+        
+    apply_css()
+    render_upload_module()
+    
+    # Simple File Uploader Mock Dashboard UI
+    st.sidebar.title("Configuration")
+    render_theme_toggle(location="sidebar")
+    
+    if st.sidebar.button("Logout"):
+        terminate_session()
+        
+    uploaded_files = st.file_uploader("Upload Invoices/Bills (PDF or Image)", accept_multiple_files=True, type=["pdf", "jpg", "jpeg", "png"])
+    
+    if uploaded_files:
+        st.info(f"{len(uploaded_files)} file(s) uploaded. Processing pipeline can be hooked here.")
+        # Setup empty dataframe for preview
+        df_empty = pd.DataFrame(columns=["page", "source", "shop_name", "bill_date", "gst_number", "bill_total", "status"])
+        render_metrics(df_empty)
 
 if __name__ == "__main__":
     main()
