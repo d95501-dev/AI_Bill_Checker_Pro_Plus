@@ -253,6 +253,7 @@ def apply_css():
             font-weight: 700 !important;
             border-radius: 14px !important;
         }
+        .stButton > button p { color: white !important; }
         .stTabs [data-baseweb="tab-list"] {
             gap: 10px; background: rgba(255,255,255,0.55); padding: 8px; border-radius: 18px;
         }
@@ -347,6 +348,7 @@ def validate_gst(gst_str):
     clean_gst = re.sub(r"[^A-Z0-9]", "", str(gst_str).upper())
     return bool(re.match(gst_regex, clean_gst)), clean_gst
 
+# 1. FIXED & REPLACED normalize_items()
 def normalize_items(items):
     if not isinstance(items, list):
         return []
@@ -354,16 +356,28 @@ def normalize_items(items):
     cleaned = []
 
     for it in items:
+        if not isinstance(it, dict):
+            continue
+
         qty = str(it.get("qty", "")).strip()
 
-        if not qty or qty.lower() in ["none", "null"]:
+        if qty in ["", "None", "null", "NULL"]:
             qty = "1"
+
+        rate = str(it.get("rate", "")).strip()
+        amount = str(it.get("amount", "")).strip()
+
+        if not amount and qty and rate:
+            try:
+                amount = str(float(qty) * float(rate))
+            except Exception:
+                amount = "0"
 
         cleaned.append({
             "name": it.get("name") or "Unknown Item",
             "qty": qty,
-            "rate": it.get("rate") or "0",
-            "amount": it.get("amount") or "0"
+            "rate": rate or "0",
+            "amount": amount or "0"
         })
 
     return cleaned
@@ -393,25 +407,9 @@ def is_gemini_quota_error(err):
     msg = str(err).lower()
     return ("429" in msg) or ("quota" in msg) or ("resource_exhausted" in msg) or ("rate limit" in msg)
 
+# 2. UPDATED build_schema_prompt() WITH NEW INSTRUCTIONS
 def build_schema_prompt():
     return """
-    IMPORTANT:
-
-Quantity must NEVER be blank.
-
-If quantity is missing:
-- infer it from the invoice row
-- otherwise use 1
-
-Extract EVERY item visible in the invoice.
-
-Do not stop after the first item.
-
-Return qty, rate and amount for each row.
-
-For PDFs containing multiple bills on the same page,
-extract all visible bills and all line items.
-
 You are a expert invoice extraction specialist. 
 Return ONLY a valid JSON object matching the schema below. 
 Do not include any explanation or backticks.
@@ -428,6 +426,20 @@ Rules:
 1. "items" must list every single product/service transaction detail visible. 
 2. Ensure you extract the item names (English or Hindi translation if clear), quantity, rate, and total amount for each row item.
 3. Calculate or copy accurate amount per item row.
+
+IMPORTANT:
+Quantity must NEVER be blank.
+
+If quantity is missing:
+- infer it from the invoice row
+- otherwise use 1
+
+Extract EVERY item visible in the invoice.
+Do not stop after the first item.
+Return qty, rate and amount for each row.
+
+For PDFs containing multiple bills on the same page,
+extract all visible bills and all line items.
 """
 
 def image_to_bytes(image):
@@ -447,12 +459,13 @@ def preprocess_for_ocr(image):
     except Exception:
         return image
 
+# 4. UPDATED PDF Multi-Bill Fix (DPI increased from Matrix 3x3 to 4x4)
 def convert_pdf_to_images(file_bytes):
     if fitz is not None:
         doc = fitz.open(stream=file_bytes, filetype="pdf")
         images = []
         for page in doc:
-            pix = page.get_pixmap(matrix=fitz.Matrix(3, 3), alpha=False)
+            pix = page.get_pixmap(matrix=fitz.Matrix(4, 4), alpha=False)
             images.append(Image.frombytes("RGB", [pix.width, pix.height], pix.samples))
         doc.close()
         return images
@@ -460,10 +473,10 @@ def convert_pdf_to_images(file_bytes):
         pdf = pdfium.PdfDocument(file_bytes)
         images = []
         for i in range(len(pdf)):
-            images.append(pdf[i].render(scale=3).to_pil().convert("RGB"))
+            images.append(pdf[i].render(scale=4).to_pil().convert("RGB"))
         return images
     if convert_from_bytes is not None:
-        return convert_from_bytes(file_bytes, dpi=300)
+        return convert_from_bytes(file_bytes, dpi=400)
     raise RuntimeError("No PDF rendering library available.")
 
 def extract_vision_text(vision_client, image):
@@ -649,9 +662,9 @@ def insert_bill(shop, date, gst, total, calc_total, status):
     with sqlite3.connect(DB_PATH, timeout=30) as conn:
         conn.execute(
             """
-            INSERT OR REPLACE INTO bills
+            INSERT OR IGNORE INTO bills
             (shop_name, bill_date, gst_number, total, calculated_total, status, timestamp)
-            values (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (shop, date, gst, float(total), float(calc_total), status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
         )
@@ -780,121 +793,6 @@ def build_excel_export(results):
         cell_sum_f.number_format = "₹#,##0.00"
         cell_sum_f.border = border_total
 
-    wb.save(buffer)
-    buffer.seek(0)
-    return buffer.getvalue()
-
-def build_batch_summary(results):
-    rows = []
-    for item in results:
-        d = item.get("data")
-        if d:
-            items = normalize_items(d.get("items"))
-            calc_total = 0.0
-            for it in items:
-                calc_total += safe_float(it.get("amount")) or (safe_float(it.get("qty")) * safe_float(it.get("rate")))
-                
-            total = safe_float(d.get("total"))
-            if total == 0.0 and calc_total > 0:
-                total = calc_total
-                
-            shop = str(d.get("shop_name") or "Unknown Shop").strip()
-            bill_date = str(d.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
-            status = "Needs Review" if total <= 0 else ("Matched" if abs(calc_total - total) < 1 else "Mismatch")
-            
-            try:
-                insert_bill(shop, bill_date, d.get("gst_number"), total, calc_total, status)
-            except Exception:
-                pass
-
-            rows.append({
-                "page": item.get("page"),
-                "source": item.get("source"),
-                "shop_name": shop,
-                "bill_date": bill_date,
-                "gst_number": d.get("gst_number") or "N/A",
-                "bill_total": total,
-                "calculated_total": calc_total,
-                "difference": abs(calc_total - total),
-                "status": status
-            })
-        else:
-            rows.append({
-                "page": item.get("page"),
-                "source": item.get("source"),
-                "shop_name": "Unknown Shop",
-                "bill_date": None,
-                "gst_number": None,
-                "bill_total": None,
-                "calculated_total": None,
-                "difference": None,
-                "status": f"Error: {item.get('error')}"
-            })
-    return pd.DataFrame(rows)
-
-def render_theme_toggle(location="main"):
-    mode = st.radio("Theme", ["light", "dark"], horizontal=True, index=0 if st.session_state.get("theme_mode", "light") == "light" else 1, key=f"theme_radio_{location}")
-    if mode != st.session_state.get("theme_mode", "light"):
-        st.session_state["theme_mode"] = mode
-        st.rerun()
-
-def make_share_text(df=None):
-    total = len(df) if df is not None and not df.empty else 0
-    matched = int((df["status"] == "Matched").sum()) if total else 0
-    mismatch = int((df["status"] == "Mismatch").sum()) if total else 0
-    review = int((df["status"] == "Needs Review").sum()) if total else 0
-
-    return (
-        f"{APP_TITLE}\n"
-        f"Files Processed: {total}\n"
-        f"Matched: {matched}\n"
-        f"Mismatch: {mismatch}\n"
-        f"Needs Review: {review}"
-    )
-
-def share_whatsapp(text): return "https://wa.me/?text=" + urllib.parse.quote(text)
-def share_telegram(text): return "https://t.me/share/url?url=&text=" + urllib.parse.quote(text)
-def share_email(text, subject="Bill Dashboard Report"): return "mailto:?subject=" + urllib.parse.quote(subject) + "&body=" + urllib.parse.quote(text)
-
-def render_upload_module():
-    st.markdown("""
-        <div class="deep-csc-header">
-            <div class="branding-text">
-                <h1>🧾 AI Multi-Bill OCR Processor</h1>
-                <p>Automated structural data parsing pipeline powered by multiple providers.</p>
-            </div>
-            <div class="csc-meta-badge">📍 <b>Deep CSC</b><br>👤 Owner: Deepak | ID: 256423250015</div>
-        </div>
-    """, unsafe_allow_html=True)
-
-# Main Application Execution Logic
-def main():
-    setup_page()
-    init_db()
-    init_auth()
-    init_runtime_state()
-    apply_theme_css()
-    
-    if not st.session_state.logged_in:
-        do_login()
-        
-    apply_css()
-    render_upload_module()
-    
-    # Simple File Uploader Mock Dashboard UI
-    st.sidebar.title("Configuration")
-    render_theme_toggle(location="sidebar")
-    
-    if st.sidebar.button("Logout"):
-        terminate_session()
-        
-    uploaded_files = st.file_uploader("Upload Invoices/Bills (PDF or Image)", accept_multiple_files=True, type=["pdf", "jpg", "jpeg", "png"])
-    
-    if uploaded_files:
-        st.info(f"{len(uploaded_files)} file(s) uploaded. Processing pipeline can be hooked here.")
-        # Setup empty dataframe for preview
-        df_empty = pd.DataFrame(columns=["page", "source", "shop_name", "bill_date", "gst_number", "bill_total", "status"])
-        render_metrics(df_empty)
-
-if __name__ == "__main__":
-    main()
+    # 3. ADDED BILL WISE SEPARATE WORKSHEETS BLOCK (Before wb.save)
+    # ==========================================
+    # BILL WISE
