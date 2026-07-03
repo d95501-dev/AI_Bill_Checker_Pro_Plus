@@ -272,11 +272,9 @@ def normalize_items(items):
     for it in items:
         if not isinstance(it, dict): continue
         qty_str = str(it.get("qty", "")).strip()
-        # Better quantity detection and fallbacks
         if qty_str in ["", "None", "null", "NULL", "false", "NaN"]:
             qty_str = "1"
         else:
-            # Extract just numbers or defaults to 1 if fully text
             num_match = re.search(r"[-+]?\d*\.\d+|\d+", qty_str)
             if num_match: qty_str = num_match.group(0)
             else: qty_str = "1"
@@ -301,7 +299,6 @@ def parse_json_from_response(response_text):
     m = re.search(r"\{.*\}|\[.*\]", raw, re.DOTALL)
     if m: raw = m.group(0)
     parsed = json.loads(raw)
-    # Wrap in root bills key if it parsed as a direct dictionary or direct list without key
     if isinstance(parsed, list):
         return {"bills": parsed}
     if isinstance(parsed, dict) and "bills" not in parsed:
@@ -386,7 +383,6 @@ def extract_vision_text(vision_client, image):
     return text.strip()
 
 def heuristic_parse_from_text(text):
-    # Standard single structure fallback inside the new multiple structure wrapper
     text = (text or "").strip()
     if not text:
         return {"bills": [{"shop_name": "Unknown Shop", "bill_date": None, "gst_number": None, "items": [], "total": "0"}]}
@@ -404,21 +400,46 @@ def heuristic_parse_from_text(text):
         }]
     }
 
+# ========================================================
+# UPDATED FUNCTION WITH THE REQUESTED REPLACEMENT LOGIC
+# ========================================================
 def try_gemini(model, image):
     try:
-        img_payload = {"data": image_to_bytes(image), "mime_type": "image/jpeg"}
+        img_payload = {
+            "data": image_to_bytes(image),
+            "mime_type": "image/jpeg"
+        }
+
         resp = model.generate_content(
             [build_schema_prompt(), img_payload],
-            generation_config={"temperature": 0, "response_mime_type": "application/json"},
+            generation_config={
+                "temperature": 0,
+                "response_mime_type": "application/json"
+            },
         )
-        data = parse_json_from_response(getattr(resp, "text", ""))
+
+        data = parse_json_from_response(
+            getattr(resp, "text", "")
+        )
+
         st.session_state.gemini_available = True
-        return data, None
+
+        if not isinstance(data, dict):
+            return {"bills": []}, None
+
+        bills = data.get("bills", [])
+
+        if not isinstance(bills, list):
+            bills = []
+
+        return {"bills": bills}, None
+
     except Exception as e:
         if is_gemini_quota_error(e):
             st.session_state.gemini_available = False
             st.session_state.last_gemini_error_time = datetime.now()
-        return None, e
+
+        return {"bills": []}, e
 
 def try_perplexity(client, image):
     b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
@@ -544,7 +565,6 @@ def build_excel_export(results):
     det_idx = 2
     row_idx = 6
 
-    # Enhanced Global Deduplication set during runtime Excel rendering
     rendered_fingerprints = set()
 
     for idx, item in enumerate(results):
@@ -556,7 +576,6 @@ def build_excel_export(results):
         date_str = str(d.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
         orig_total = safe_float(d.get("total"))
 
-        # Local transaction loop
         items = normalize_items(d.get("items"))
         calc_total = 0.0
         
@@ -572,7 +591,6 @@ def build_excel_export(results):
             continue
         rendered_fingerprints.add(fingerprint)
 
-        # Write to general detail transaction sheet
         for it in items:
             amt = safe_float(it.get("amount")) or (safe_float(it.get("qty")) * safe_float(it.get("rate")))
             ws2.cell(row=det_idx, column=1, value=source)
@@ -610,9 +628,6 @@ def build_excel_export(results):
             cell.border = border_all
             if row_idx % 2 == 1: cell.fill = fill_zebra
 
-        # ==========================================
-        # FIXED BILL-WISE SEPARATE WORKSHEET MODIFICATION
-        # ==========================================
         clean_shop_title = sanitize_sheet_name(f"B{row_idx-5}_{shop}")
         ws_bill = wb.create_sheet(title=clean_shop_title)
         ws_bill.views.sheetView[0].showGridLines = True
@@ -640,7 +655,6 @@ def build_excel_export(results):
                 cell_v.border = border_all
             sub_idx += 1
             
-        # Sheet local totals
         ws_bill.cell(row=sub_idx, column=1, value="Total Summary").font = font_bold
         tot_cell = ws_bill.cell(row=sub_idx, column=4, value=calc_total)
         tot_cell.font = font_bold
@@ -692,7 +706,6 @@ def build_batch_summary(results):
             if total == 0.0 and calc_total > 0:
                 total = calc_total
 
-            # Runtime Duplicate Removal Check
             fingerprint = f"{shop}_{bill_date}_{total:.2f}"
             if fingerprint in seen_fingerprints:
                 continue
@@ -789,7 +802,6 @@ def render_upload_module():
                         pages = convert_pdf_to_images(file_bytes)
                         for i, img in enumerate(pages):
                             response_data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
-                            # Multi-bill iteration split array handler
                             for structure in response_data.get("bills", []):
                                 all_results.append({"page": i + 1, "source": uploaded_file.name, "data": structure})
                     except Exception as e:
