@@ -503,7 +503,7 @@ def heuristic_parse_from_text(text):
 
     total_patterns = [
         r"\bGrand Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
-        <font color="#990000">r"\bNet Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",</font>
+        r"\bNet Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
         r"\bTotal[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
         r"\bAmount[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
     ]
