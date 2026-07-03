@@ -45,24 +45,10 @@ try:
 except Exception:
     vision = None
 
-try:
-    import boto3
-except Exception:
-    boto3 = None
-
-try:
-    from google.oauth2 import service_account
-    from googleapiclient.discovery import build
-    from googleapiclient.http import MediaFileUpload
-except Exception:
-    service_account = None
-    build = None
-    MediaFileUpload = None
-
 import warnings
 warnings.filterwarnings("ignore")
 
-APP_TITLE = "Deep CSC - AI Bill Processor Premium"
+APP_TITLE = "Deep CSC - AI Multi-Bill Processor Ultra"
 DB_PATH = "bills.db"
 OUTPUT_DIR = "output"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
@@ -92,7 +78,7 @@ def init_db():
                 calculated_total REAL NOT NULL,
                 status TEXT NOT NULL,
                 timestamp TEXT NOT NULL,
-                UNIQUE(shop_name, bill_date, total) ON CONFLICT REPLACE
+                UNIQUE(shop_name, bill_date, total) ON CONFLICT IGNORE
             )
             """
         )
@@ -136,11 +122,7 @@ def do_login():
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
-        .login-sub {
-            margin-top: 8px;
-            color: #64748b;
-            font-size: 14px;
-        }
+        .login-sub { margin-top: 8px; color: #64748b; font-size: 14px; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -189,78 +171,43 @@ def apply_theme_css():
 def apply_css():
     st.markdown("""
         <style>
-        .stApp {
-            background: radial-gradient(circle at top left, #ffffff 0%, #eef2ff 45%, #e2e8f0 100%);
-        }
+        .stApp { background: radial-gradient(circle at top left, #ffffff 0%, #eef2ff 45%, #e2e8f0 100%); }
         .deep-csc-header {
             background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 45%, #312e81 100%);
-            padding: 28px 30px;
-            border-radius: 28px;
-            margin-bottom: 18px;
-            border: 1px solid rgba(255,255,255,0.10);
-            box-shadow: 0 18px 40px rgba(15, 23, 42, 0.22);
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 18px;
-            flex-wrap: wrap;
+            padding: 28px 30px; border-radius: 28px; margin-bottom: 18px;
+            border: 1px solid rgba(255,255,255,0.10); box-shadow: 0 18px 40px rgba(15, 23, 42, 0.22);
+            display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap;
         }
         .branding-text h1 {
-            margin: 0;
-            font-size: 34px !important;
-            font-weight: 800;
+            margin: 0; font-size: 34px !important; font-weight: 800;
             background: linear-gradient(to right, #38bdf8, #c084fc, #f43f5e);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
         }
         .branding-text p { margin: 6px 0 0 0; color: #cbd5e1; font-size: 14px; }
         .branding-badge {
-            background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%);
-            color: white !important;
-            padding: 9px 16px;
-            border-radius: 999px;
-            font-size: 12px !important;
-            font-weight: 700;
-            text-transform: uppercase;
+            background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%); color: white !important;
+            padding: 9px 16px; border-radius: 999px; font-size: 12px !important; font-weight: 700; text-transform: uppercase;
         }
         .csc-meta-badge {
-            background: rgba(255,255,255,0.08);
-            border: 1px solid rgba(255,255,255,0.14);
-            color: #e2e8f0 !important;
-            padding: 12px 16px;
-            border-radius: 16px;
-            font-size: 13px !important;
+            background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.14);
+            color: #e2e8f0 !important; padding: 12px 16px; border-radius: 16px; font-size: 13px !important;
         }
         .metric-card {
-            background: rgba(255,255,255,0.82);
-            border: 1px solid rgba(148,163,184,0.18);
-            border-radius: 22px;
-            padding: 18px 20px;
-            box-shadow: 0 14px 35px rgba(15, 23, 42, 0.10);
+            background: rgba(255,255,255,0.82); border: 1px solid rgba(148,163,184,0.18);
+            border-radius: 22px; padding: 18px 20px; box-shadow: 0 14px 35px rgba(15, 23, 42, 0.10);
         }
         .metric-label { color: #64748b; font-size: 13px; margin-bottom: 8px; }
         .metric-value { font-size: 28px; font-weight: 800; color: #0f172a; }
         .metric-sub { color: #64748b; font-size: 13px; }
-        .section-card {
-            background: rgba(255,255,255,0.78);
-            border: 1px solid rgba(148,163,184,0.16);
-            border-radius: 22px;
-            padding: 18px;
-        }
+        .section-card { background: rgba(255,255,255,0.78); border: 1px solid rgba(148,163,184,0.16); border-radius: 22px; padding: 18px; }
         .stButton > button {
             background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important;
-            color: white !important;
-            font-weight: 700 !important;
-            border-radius: 14px !important;
+            color: white !important; font-weight: 700 !important; border-radius: 14px !important;
         }
         .stButton > button p { color: white !important; }
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 10px; background: rgba(255,255,255,0.55); padding: 8px; border-radius: 18px;
-        }
+        .stTabs [data-baseweb="tab-list"] { gap: 10px; background: rgba(255,255,255,0.55); padding: 8px; border-radius: 18px; }
         .stTabs [data-baseweb="tab"] { border-radius: 14px; padding: 10px 18px; font-weight: 700; }
-        .stTabs [aria-selected="true"] {
-            background: linear-gradient(135deg, #0f172a 0%, #4338ca 100%) !important; color: white !important;
-        }
+        .stTabs [aria-selected="true"] { background: linear-gradient(135deg, #0f172a 0%, #4338ca 100%) !important; color: white !important; }
         div[data-testid="stDataFrame"] { border-radius: 18px; overflow: hidden; }
         section[data-testid="stSidebar"] { background: linear-gradient(180deg, #0f172a 0%, #111827 100%); }
         section[data-testid="stSidebar"] * { color: #f8fafc !important; }
@@ -284,121 +231,91 @@ def render_metrics(df):
     mismatch = int((df["status"] == "Mismatch").sum()) if total_files else 0
     review = int((df["status"] == "Needs Review").sum()) if total_files else 0
 
-    with c1:
-        metric_card("Files Processed", total_files, "Uploaded this session")
-    with c2:
-        metric_card("Matched Bills", matched, "Auto verified")
-    with c3:
-        metric_card("Mismatch / Review", mismatch + review, "Needs attention")
-    with c4:
-        metric_card("OCR Provider", st.session_state.get("selected_provider", "Gemini"), "Current mode")
+    with c1: metric_card("Total Bills Found", total_files, "Extracted from batch")
+    with c2: metric_card("Matched Bills", matched, "Sum verified perfectly")
+    with c3: metric_card("Mismatch / Review", mismatch + review, "Requires verification")
+    with c4: metric_card("OCR Provider", st.session_state.get("selected_provider", "Gemini"), "Active pipeline")
 
 @st.cache_resource
 def setup_gemini():
-    if genai is None:
-        return None
+    if genai is None: return None
     api_key = secret_or_default("GEMINI_API_KEY", "").strip()
-    if not api_key:
-        return None
+    if not api_key: return None
     genai.configure(api_key=api_key)
     return genai.GenerativeModel("gemini-2.5-flash")
 
 @st.cache_resource
 def setup_openai():
     api_key = secret_or_default("OPENAI_API_KEY", "").strip()
-    if not api_key or OpenAI is None:
-        return None
+    if not api_key or OpenAI is None: return None
     return OpenAI(api_key=api_key)
 
 @st.cache_resource
 def setup_perplexity():
     api_key = secret_or_default("PERPLEXITY_API_KEY", "").strip()
-    if not api_key or OpenAI is None:
-        return None
+    if not api_key or OpenAI is None: return None
     return OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
 
 @st.cache_resource
 def setup_google_vision():
     return vision.ImageAnnotatorClient() if vision is not None else None
 
-def get_drive_service():
-    service_account_file = secret_or_default("GOOGLE_SERVICE_ACCOUNT_FILE", "service_account.json")
-    if service_account is None or build is None or not os.path.exists(service_account_file):
-        return None
-    creds = service_account.Credentials.from_service_account_file(
-        service_account_file, scopes=["https://www.googleapis.com/auth/drive"]
-    )
-    return build("drive", "v3", credentials=creds)
-
-def upload_to_drive(local_path, drive_name=None, mime_type="application/octet-stream"):
-    folder_id = secret_or_default("DRIVE_FOLDER_ID", "").strip()
-    if not folder_id:
-        return None
-    service = get_drive_service()
-    if service is None or MediaFileUpload is None:
-        return None
-    metadata = {"name": drive_name or os.path.basename(local_path), "parents": [folder_id]}
-    media = MediaFileUpload(local_path, mimetype=mime_type, resumable=True)
-    return service.files().create(body=metadata, media_body=media, fields="id, name, webViewLink").execute()
-
 def validate_gst(gst_str):
-    if not gst_str:
-        return False, "N/A"
+    if not gst_str: return False, "N/A"
     gst_regex = r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$"
     clean_gst = re.sub(r"[^A-Z0-9]", "", str(gst_str).upper())
     return bool(re.match(gst_regex, clean_gst)), clean_gst
 
 def normalize_items(items):
-    if not isinstance(items, list):
-        return []
-
+    if not isinstance(items, list): return []
     cleaned = []
-
     for it in items:
-        if not isinstance(it, dict):
-            continue
-
-        qty = str(it.get("qty", "")).strip()
-
-        if qty in ["", "None", "null", "NULL"]:
-            qty = "1"
+        if not isinstance(it, dict): continue
+        qty_str = str(it.get("qty", "")).strip()
+        # Better quantity detection and fallbacks
+        if qty_str in ["", "None", "null", "NULL", "false", "NaN"]:
+            qty_str = "1"
+        else:
+            # Extract just numbers or defaults to 1 if fully text
+            num_match = re.search(r"[-+]?\d*\.\d+|\d+", qty_str)
+            if num_match: qty_str = num_match.group(0)
+            else: qty_str = "1"
 
         rate = str(it.get("rate", "")).strip()
         amount = str(it.get("amount", "")).strip()
 
-        if not amount and qty and rate:
-            try:
-                amount = str(float(qty) * float(rate))
-            except Exception:
-                amount = "0"
+        if not amount and qty_str and rate:
+            try: amount = str(float(qty_str) * float(rate))
+            except Exception: amount = "0"
 
         cleaned.append({
             "name": it.get("name") or "Unknown Item",
-            "qty": qty,
+            "qty": qty_str,
             "rate": rate or "0",
             "amount": amount or "0"
         })
-
     return cleaned
 
 def parse_json_from_response(response_text):
     raw = (response_text or "").strip().replace("```json", "").replace("```", "").strip()
-    m = re.search(r"\{.*\}", raw, re.DOTALL)
-    if m:
-        raw = m.group(0)
-    return json.loads(raw)
+    m = re.search(r"\{.*\}|\[.*\]", raw, re.DOTALL)
+    if m: raw = m.group(0)
+    parsed = json.loads(raw)
+    # Wrap in root bills key if it parsed as a direct dictionary or direct list without key
+    if isinstance(parsed, list):
+        return {"bills": parsed}
+    if isinstance(parsed, dict) and "bills" not in parsed:
+        if "items" in parsed or "shop_name" in parsed:
+            return {"bills": [parsed]}
+    return parsed
 
 def safe_float(value):
-    if not value:
-        return 0.0
-    try:
-        return float(str(value).replace("₹", "").replace(",", "").strip())
-    except Exception:
-        return 0.0
+    if not value: return 0.0
+    try: return float(str(value).replace("₹", "").replace(",", "").replace(" ", "").strip())
+    except Exception: return 0.0
 
 def can_try_gemini():
-    if st.session_state.get("gemini_available", True):
-        return True
+    if st.session_state.get("gemini_available", True): return True
     last_error = st.session_state.get("last_gemini_error_time")
     return (not last_error) or ((datetime.now() - last_error).total_seconds() >= st.session_state.get("gemini_cooldown_seconds", 900))
 
@@ -408,36 +325,29 @@ def is_gemini_quota_error(err):
 
 def build_schema_prompt():
     return """
-You are a expert invoice extraction specialist. 
-Return ONLY a valid JSON object matching the schema below. 
-Do not include any explanation or backticks.
+You are an expert multi-invoice intelligence extraction agent. 
+An inherent capability to detect MULTIPLE separate bills or receipts from a single page image is expected.
+Analyze the provided document image and look closely for horizontal/vertical demarcations, distinct header zones, or multiple standalone lists.
+
+Return ONLY a valid JSON object matching the exact schema below. Do not include any explanation or backticks.
 
 {
-  "shop_name": string or null,
-  "bill_date": string or null,
-  "gst_number": string or null,
-  "items": [{"name": string, "qty": string, "rate": string, "amount": string}],
-  "total": string or null
+  "bills": [
+    {
+      "shop_name": string or null,
+      "bill_date": string or null,
+      "gst_number": string or null,
+      "items": [{"name": string, "qty": string, "rate": string, "amount": string}],
+      "total": string or null
+    }
+  ]
 }
 
-Rules:
-1. "items" must list every single product/service transaction detail visible. 
-2. Ensure you extract the item names (English or Hindi translation if clear), quantity, rate, and total amount for each row item.
-3. Calculate or copy accurate amount per item row.
-
-IMPORTANT:
-Quantity must NEVER be blank.
-
-If quantity is missing:
-- infer it from the invoice row
-- otherwise use 1
-
-Extract EVERY item visible in the invoice.
-Do not stop after the first item.
-Return qty, rate and amount for each row.
-
-For PDFs containing multiple bills on the same page,
-extract all visible bills and all line items.
+Extraction Strategy Rules:
+1. "bills" is an array. If there is 1 bill, return 1 object inside the array. If there are multiple distinct bills captured on the page, split them cleanly into separate structural entities inside the array.
+2. For each bill, look for line items. Ensure you extract the item name, accurate quantity, rate, and total amount.
+3. CRITICAL QUANTITY RULE: Quantity must NEVER be blank or non-numeric. Look closely at columns like "Qty", "Pcs", "Nos", "Pkt", "Quantity", "मात्रा". If a specific quantity is omitted or represented implicitly, you MUST intelligently infer it or use "1" as a structural fallback. Never leave it empty.
+4. Extract every single line item visible on the document. Do not truncate.
 """
 
 def image_to_bytes(image):
@@ -446,16 +356,7 @@ def image_to_bytes(image):
     return buf.getvalue()
 
 def preprocess_for_ocr(image):
-    try:
-        import cv2
-        import numpy as np
-        img = np.array(image.convert("RGB"))
-        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-        gray = cv2.GaussianBlur(gray, (3, 3), 0)
-        thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 31, 11)
-        return Image.fromarray(thresh)
-    except Exception:
-        return image
+    return image
 
 def convert_pdf_to_images(file_bytes):
     if fitz is not None:
@@ -482,108 +383,26 @@ def extract_vision_text(vision_client, image):
     text = ""
     if getattr(resp, "full_text_annotation", None):
         text = getattr(resp.full_text_annotation, "text", "") or ""
-    if not text.strip() and getattr(resp, "text_annotations", None):
-        anns = resp.text_annotations
-        if anns and getattr(anns[0], "description", ""):
-            text = anns[0].description.strip()
     return text.strip()
 
-def heuristic_extract_items(text):
-    items = []
-    for ln in [x.strip() for x in (text or "").splitlines() if x.strip()]:
-        if re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
-            continue
-        m = re.match(r"(.+?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)\s+(\d+(?:\.\d+)?)$", ln)
-        if m:
-            items.append({"name": m.group(1).strip(), "qty": m.group(2), "rate": m.group(3), "amount": m.group(4)})
-    return items[:30]
-
 def heuristic_parse_from_text(text):
+    # Standard single structure fallback inside the new multiple structure wrapper
     text = (text or "").strip()
     if not text:
-        return {"shop_name": None, "bill_date": None, "gst_number": None, "items": [], "total": None, "raw_text": ""}
-
+        return {"bills": [{"shop_name": "Unknown Shop", "bill_date": None, "gst_number": None, "items": [], "total": "0"}]}
+    
     lines = [x.strip() for x in text.splitlines() if x.strip()]
-    shop_name = None
-    for ln in lines[:12]:
-        if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax)\b", ln, re.I):
-            shop_name = ln[:80]
-            break
-
-    gst_number = None
-    bill_date = None
-    total = None
-
-    gst_patterns = [
-        r"\bGSTIN[:\s-]*([0-9A-Z]{15})\b",
-        r"\b([0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z])\b"
-    ]
-    for p in gst_patterns:
-        m = re.search(p, text, re.I)
-        if m:
-            gst_number = m.group(1)
-            break
-
-    date_patterns = [
-        r"\b(\d{2}[/-]\d{2}[/-]\d{2,4})\b",
-        r"\b(\d{4}[/-]\d{2}[/-]\d{2})\b",
-        r"\b(\d{2}\s+[A-Za-z]{3,9}\s+\d{2,4})\b"
-    ]
-    for p in date_patterns:
-        m = re.search(p, text)
-        if m:
-            bill_date = m.group(1)
-            break
-
-    total_patterns = [
-        r"\bGrand Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
-        r"\bNet Total[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
-        r"\bTotal[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
-        r"\bAmount[:\s]*₹?\s*([0-9,]+(?:\.\d{1,2})?)\b",
-    ]
-    for p in total_patterns:
-        m = re.search(p, text, re.I)
-        if m:
-            total = m.group(1)
-            break
-
-    if not shop_name:
-        for ln in lines:
-            if len(ln) >= 3 and not re.search(r"\b(invoice|bill|gst|date|total|amount|tax|phone|mobile|email)\b", ln, re.I):
-                shop_name = ln[:80]
-                break
-
+    shop_name = lines[0][:80] if lines else "Unknown Shop"
+    
     return {
-        "shop_name": shop_name,
-        "bill_date": bill_date,
-        "gst_number": gst_number,
-        "items": heuristic_extract_items(text),
-        "total": total,
-        "raw_text": text,
+        "bills": [{
+            "shop_name": shop_name,
+            "bill_date": datetime.now().strftime("%Y-%m-%d"),
+            "gst_number": "N/A",
+            "items": [],
+            "total": "0"
+        }]
     }
-
-def normalize_result(data, fallback_text=""):
-    if not isinstance(data, dict):
-        data = {}
-    raw_text = str(data.get("raw_text") or fallback_text or "").strip()
-    if not data.get("items") or len(data["items"]) == 0:
-        if raw_text:
-            parsed = heuristic_parse_from_text(raw_text)
-            data["items"] = parsed.get("items") or []
-            if not data.get("shop_name"): data["shop_name"] = parsed.get("shop_name")
-            if not data.get("bill_date"): data["bill_date"] = parsed.get("bill_date")
-            if not data.get("gst_number"): data["gst_number"] = parsed.get("gst_number")
-            if not data.get("total"): data["total"] = parsed.get("total")
-    if not data.get("shop_name"):
-        data["shop_name"] = "Unknown Shop"
-    if not data.get("bill_date"):
-        data["bill_date"] = datetime.now().strftime("%Y-%m-%d")
-    if not data.get("gst_number"):
-        data["gst_number"] = "N/A"
-    if not data.get("total"):
-        data["total"] = "0"
-    data["raw_text"] = raw_text
-    return data
 
 def try_gemini(model, image):
     try:
@@ -594,8 +413,7 @@ def try_gemini(model, image):
         )
         data = parse_json_from_response(getattr(resp, "text", ""))
         st.session_state.gemini_available = True
-        st.session_state.last_gemini_error_time = None
-        return normalize_result(data), None
+        return data, None
     except Exception as e:
         if is_gemini_quota_error(e):
             st.session_state.gemini_available = False
@@ -609,13 +427,13 @@ def try_perplexity(client, image):
         messages=[
             {"role": "system", "content": build_schema_prompt()},
             {"role": "user", "content": [
-                {"type": "text", "text": "Extract invoice JSON from this image."},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
+                {"type": "text", "text": "Extract invoices from this image structured in the requested array structure."},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
             ]},
         ],
         temperature=0.0,
     )
-    return normalize_result(parse_json_from_response(resp.choices[0].message.content))
+    return parse_json_from_response(resp.choices[0].message.content)
 
 def try_openai(client, image):
     b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
@@ -624,13 +442,13 @@ def try_openai(client, image):
         messages=[
             {"role": "system", "content": build_schema_prompt()},
             {"role": "user", "content": [
-                {"type": "text", "text": "Extract invoice JSON from this image."},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}", "detail": "high"}},
+                {"type": "text", "text": "Extract billing arrays from this snapshot."},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
             ]},
         ],
         response_format={"type": "json_object"},
     )
-    return normalize_result(parse_json_from_response(resp.choices[0].message.content))
+    return parse_json_from_response(resp.choices[0].message.content)
 
 def analyze_with_auto_fallback(model_bundle, image, forced=None):
     image = preprocess_for_ocr(image)
@@ -642,25 +460,26 @@ def analyze_with_auto_fallback(model_bundle, image, forced=None):
         try:
             if provider == "Gemini" and model_bundle.get("gemini") and can_try_gemini():
                 data, _ = try_gemini(model_bundle["gemini"], image)
-                if data: return data
+                if data and "bills" in data: return data
             elif provider == "Google Vision OCR" and model_bundle.get("vision_client"):
                 text = extract_vision_text(model_bundle["vision_client"], image)
-                if text: return normalize_result(heuristic_parse_from_text(text), text)
+                if text: return heuristic_parse_from_text(text)
             elif provider == "Perplexity" and model_bundle.get("perplexity"):
-                return try_perplexity(model_bundle["perplexity"], image)
+                res = try_perplexity(model_bundle["perplexity"], image)
+                if res and "bills" in res: return res
             elif provider == "OpenAI" and model_bundle.get("openai"):
-                return try_openai(model_bundle["openai"], image)
+                res = try_openai(model_bundle["openai"], image)
+                if res and "bills" in res: return res
         except Exception:
             continue
 
-    return normalize_result(heuristic_parse_from_text(""), "")
+    return {"bills": []}
 
 def insert_bill(shop, date, gst, total, calc_total, status):
     with sqlite3.connect(DB_PATH, timeout=30) as conn:
         conn.execute(
             """
-            INSERT OR IGNORE INTO bills
-            (shop_name, bill_date, gst_number, total, calculated_total, status, timestamp)
+            INSERT OR IGNORE INTO bills (shop_name, bill_date, gst_number, total, calculated_total, status, timestamp)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (shop, date, gst, float(total), float(calc_total), status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
@@ -670,7 +489,7 @@ def insert_bill(shop, date, gst, total, calc_total, status):
 def sanitize_sheet_name(name, fallback="Sheet"):
     name = re.sub(r"[\[\]\*\?\/\\:]", "_", str(name)).strip()
     name = re.sub(r"\s+", " ", name)
-    return (name[:31] or fallback)
+    return (name[:25] or fallback)
 
 def build_excel_export(results):
     buffer = BytesIO()
@@ -725,19 +544,37 @@ def build_excel_export(results):
     det_idx = 2
     row_idx = 6
 
+    # Enhanced Global Deduplication set during runtime Excel rendering
+    rendered_fingerprints = set()
+
     for idx, item in enumerate(results):
-        d = item.get("data") or {}
         source = item.get("source", "Unknown")
         page = item.get("page", 1)
-        shop = d.get("shop_name", "Unknown Shop")
-        date_str = d.get("bill_date", "N/A")
-        
+        d = item.get("data") or {}
+
+        shop = str(d.get("shop_name") or "Unknown Shop").strip()
+        date_str = str(d.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
+        orig_total = safe_float(d.get("total"))
+
+        # Local transaction loop
         items = normalize_items(d.get("items"))
         calc_total = 0.0
+        
         for it in items:
             amt = safe_float(it.get("amount")) or (safe_float(it.get("qty")) * safe_float(it.get("rate")))
             calc_total += amt
-            
+
+        if orig_total == 0.0 and calc_total > 0:
+            orig_total = calc_total
+
+        fingerprint = f"{shop}_{date_str}_{orig_total:.2f}"
+        if fingerprint in rendered_fingerprints:
+            continue
+        rendered_fingerprints.add(fingerprint)
+
+        # Write to general detail transaction sheet
+        for it in items:
+            amt = safe_float(it.get("amount")) or (safe_float(it.get("qty")) * safe_float(it.get("rate")))
             ws2.cell(row=det_idx, column=1, value=source)
             ws2.cell(row=det_idx, column=2, value=shop)
             ws2.cell(row=det_idx, column=3, value=date_str)
@@ -752,10 +589,9 @@ def build_excel_export(results):
                 if det_idx % 2 == 1: cell.fill = fill_zebra
             det_idx += 1
 
-        orig_total = safe_float(d.get("total")) or calc_total
-        status = "Needs Review" if orig_total <= 0 else ("Verified Matched" if abs(calc_total - orig_total) < 1 else "Mismatch")
+        status = "Needs Review" if orig_total <= 0 else ("Matched" if abs(calc_total - orig_total) < 1 else "Mismatch")
 
-        ws1.cell(row=row_idx, column=1, value=idx + 1).alignment = Alignment(horizontal="center")
+        ws1.cell(row=row_idx, column=1, value=row_idx - 5).alignment = Alignment(horizontal="center")
         ws1.cell(row=row_idx, column=2, value=f"{source} (P.{page})")
         ws1.cell(row=row_idx, column=3, value=shop)
         ws1.cell(row=row_idx, column=4, value=date_str).alignment = Alignment(horizontal="center")
@@ -773,73 +609,65 @@ def build_excel_export(results):
             cell.font = font_regular
             cell.border = border_all
             if row_idx % 2 == 1: cell.fill = fill_zebra
+
+        # ==========================================
+        # FIXED BILL-WISE SEPARATE WORKSHEET MODIFICATION
+        # ==========================================
+        clean_shop_title = sanitize_sheet_name(f"B{row_idx-5}_{shop}")
+        ws_bill = wb.create_sheet(title=clean_shop_title)
+        ws_bill.views.sheetView[0].showGridLines = True
+        
+        ws_bill.cell(row=1, column=1, value=f"Vendor: {shop}").font = font_bold
+        ws_bill.cell(row=2, column=1, value=f"Date: {date_str}").font = font_regular
+        
+        headers_b = ["Item Name / Particulars", "Qty", "Rate", "Amount"]
+        for col_v, hv in enumerate(headers_b, 1):
+            h_cell = ws_bill.cell(row=4, column=col_v, value=hv)
+            h_cell.font = font_header
+            h_cell.fill = fill_header
+            h_cell.alignment = Alignment(horizontal="center")
+
+        sub_idx = 5
+        for it in items:
+            ws_bill.cell(row=sub_idx, column=1, value=it.get("name"))
+            ws_bill.cell(row=sub_idx, column=2, value=safe_float(it.get("qty")))
+            ws_bill.cell(row=sub_idx, column=3, value=safe_float(it.get("rate"))).number_format = "₹#,##0.00"
+            amt_calc = safe_float(it.get("amount")) or (safe_float(it.get("qty")) * safe_float(it.get("rate")))
+            ws_bill.cell(row=sub_idx, column=4, value=amt_calc).number_format = "₹#,##0.00"
+            for col_v in range(1, 5):
+                cell_v = ws_bill.cell(row=sub_idx, column=col_v)
+                cell_v.font = font_regular
+                cell_v.border = border_all
+            sub_idx += 1
+            
+        # Sheet local totals
+        ws_bill.cell(row=sub_idx, column=1, value="Total Summary").font = font_bold
+        tot_cell = ws_bill.cell(row=sub_idx, column=4, value=calc_total)
+        tot_cell.font = font_bold
+        tot_cell.number_format = "₹#,##0.00"
+        tot_cell.border = border_total
+
+        for col_v in range(1, 5):
+            ws_bill.column_dimensions[get_column_letter(col_v)].width = 22
+
         row_idx += 1
 
     if row_idx > 6:
-        ws1.cell(row=row_idx, column=3, value="Grand Total").font = font_bold
-        
-        cell_sum_e = ws1.cell(row=row_idx, column=5)
-        cell_sum_e.value = f"=SUM(E6:E{row_idx-1})"
+        ws1.cell(row=row_idx, column=3, value="Grand Total Summary").font = font_bold
+        cell_sum_e = ws1.cell(row=row_idx, column=5, value=f"=SUM(E6:E{row_idx-1})")
         cell_sum_e.font = font_bold
         cell_sum_e.number_format = "₹#,##0.00"
         cell_sum_e.border = border_total
         
-        cell_sum_f = ws1.cell(row=row_idx, column=6)
-        cell_sum_f.value = f"=SUM(F6:F{row_idx-1})"
+        cell_sum_f = ws1.cell(row=row_idx, column=6, value=f"=SUM(F6:F{row_idx-1})")
         cell_sum_f.font = font_bold
         cell_sum_f.number_format = "₹#,##0.00"
         cell_sum_f.border = border_total
 
-    # ==========================================
-    # BILL WISE SEPARATE WORKSHEETS
-    # ==========================================
-    for idx, item in enumerate(results):
-        d = item.get("data") or {}
-        sheet_name = sanitize_sheet_name(
-            f"Bill_{idx+1}_{d.get('shop_name','Unknown')}"
-        )
-        ws_bill = wb.create_sheet(title=sheet_name)
-        headers = [
-            "Item Name",
-            "Qty",
-            "Rate",
-            "Amount"
-        ]
-        for col, header in enumerate(headers, start=1):
-            cell = ws_bill.cell(
-                row=1,
-                column=col,
-                value=header
-            )
-            cell.font = font_header
-            cell.fill = fill_header
-
-        row_no = 2
-        bill_total = 0
-
-        for it in normalize_items(d.get("items")):
-            qty = safe_float(it.get("qty"))
-            rate = safe_float(it.get("rate"))
-            amount = safe_float(it.get("amount"))
-
-            if amount == 0 and qty > 0 and rate > 0:
-                amount = qty * rate
-
-            bill_total += amount
-
-            ws_bill.cell(row=row_no, column=1, value=it.get("name"))
-            ws_bill.cell(row=row_no, column=2, value=qty)
-            ws_bill.cell(row=row_no, column=3, value=rate)
-            ws_bill.cell(row=row_no, column=4, value=amount)
-            row_no += 1
-
-        ws_bill.cell(row=row_no + 1, column=3, value="Bill Total")
-        ws_bill.cell(row=row_no + 1, column=4, value=bill_total)
-
-        for col in range(1, 5):
-            ws_bill.column_dimensions[
-                get_column_letter(col)
-            ].width = 25
+    for col in range(1, 8):
+        ws1.column_dimensions[get_column_letter(col)].width = 20
+    for col in range(1, 8):
+        ws2.column_dimensions[get_column_letter(col)].width = 20
 
     wb.save(buffer)
     buffer.seek(0)
@@ -847,9 +675,14 @@ def build_excel_export(results):
 
 def build_batch_summary(results):
     rows = []
+    seen_fingerprints = set()
+    
     for item in results:
         d = item.get("data")
         if d:
+            shop = str(d.get("shop_name") or "Unknown Shop").strip()
+            bill_date = str(d.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
+            
             items = normalize_items(d.get("items"))
             calc_total = 0.0
             for it in items:
@@ -858,15 +691,17 @@ def build_batch_summary(results):
             total = safe_float(d.get("total"))
             if total == 0.0 and calc_total > 0:
                 total = calc_total
-                
-            shop = str(d.get("shop_name") or "Unknown Shop").strip()
-            bill_date = str(d.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
+
+            # Runtime Duplicate Removal Check
+            fingerprint = f"{shop}_{bill_date}_{total:.2f}"
+            if fingerprint in seen_fingerprints:
+                continue
+            seen_fingerprints.add(fingerprint)
+            
             status = "Needs Review" if total <= 0 else ("Matched" if abs(calc_total - total) < 1 else "Mismatch")
             
-            try:
-                insert_bill(shop, bill_date, d.get("gst_number"), total, calc_total, status)
-            except Exception:
-                pass
+            try: insert_bill(shop, bill_date, d.get("gst_number"), total, calc_total, status)
+            except Exception: pass
 
             rows.append({
                 "page": item.get("page"),
@@ -877,19 +712,8 @@ def build_batch_summary(results):
                 "bill_total": total,
                 "calculated_total": calc_total,
                 "difference": abs(calc_total - total),
-                "status": status
-            })
-        else:
-            rows.append({
-                "page": item.get("page"),
-                "source": item.get("source"),
-                "shop_name": "Unknown Shop",
-                "bill_date": None,
-                "gst_number": None,
-                "bill_total": None,
-                "calculated_total": None,
-                "difference": None,
-                "status": f"Error: {item.get('error')}"
+                "status": status,
+                "items_raw": items
             })
     return pd.DataFrame(rows)
 
@@ -904,47 +728,39 @@ def make_share_text(df=None):
     matched = int((df["status"] == "Matched").sum()) if total else 0
     mismatch = int((df["status"] == "Mismatch").sum()) if total else 0
     review = int((df["status"] == "Needs Review").sum()) if total else 0
-
-    return (
-        f"{APP_TITLE}\n"
-        f"Files Processed: {total}\n"
-        f"Matched: {matched}\n"
-        f"Mismatch: {mismatch}\n"
-        f"Needs Review: {review}"
-    )
+    return f"{APP_TITLE}\nFiles Extracted: {total}\nMatched: {matched}\nMismatch: {mismatch}\nReview Required: {review}"
 
 def share_whatsapp(text): return "https://wa.me/?text=" + urllib.parse.quote(text)
 def share_telegram(text): return "https://t.me/share/url?url=&text=" + urllib.parse.quote(text)
-def share_email(text, subject="Bill Dashboard Report"): return "mailto:?subject=" + urllib.parse.quote(subject) + "&body=" + urllib.parse.quote(text)
+def share_email(text, subject="AI Multi-Bill Summary Report"): return "mailto:?subject=" + urllib.parse.quote(subject) + "&body=" + urllib.parse.quote(text)
 
 def render_upload_module():
     st.markdown("""
         <div class="deep-csc-header">
             <div class="branding-text">
-                <h1>🧾 AI Multi-Bill OCR Processor</h1>
-                <p>Automated structural data parsing pipeline powered by multiple providers.</p>
+                <h1>🧾 AI Intelligent Multi-Bill OCR Processor</h1>
+                <p>One-Page Multi-Bill Segregation & Verified Transaction Ledger Extraction Engine.</p>
             </div>
             <div class="csc-meta-badge">📍 <b>Deep CSC</b><br>👤 Owner: Deepak | ID: 256423250015</div>
-            <div class="branding-badge">Deep CSC AI</div>
+            <div class="branding-badge">Ultra Build</div>
         </div>
     """, unsafe_allow_html=True)
 
-    tabs = st.tabs(["📷 Scan / Upload", "🕘 History", "⚙️ Settings"])
+    tabs = st.tabs(["📷 Scan Pipeline", "🕘 History Logs", "⚙️ Preferences"])
 
     with tabs[0]:
         providers = ["Gemini", "Google Vision OCR", "Perplexity", "OpenAI"]
-        st.session_state.selected_provider = st.selectbox("Select OCR Provider", providers, index=providers.index("Gemini"), key="provider_selectbox")
+        st.session_state.selected_provider = st.selectbox("Select OCR Provider Architecture", providers, index=providers.index("Gemini"))
 
         uploaded_files = st.file_uploader(
-            "Upload Bill Images or PDFs",
+            "Upload Single/Multi-Bill Invoices (Images or PDFs)",
             type=["jpg", "jpeg", "png", "pdf"],
-            accept_multiple_files=True,
-            key="bill_uploader",
+            accept_multiple_files=True
         )
 
         col_a, col_b = st.columns(2)
-        with col_a: process_now = st.button("Process All Files", use_container_width=True)
-        with col_b: clear_state = st.button("Clear Uploaded / Processed Files", use_container_width=True)
+        with col_a: process_now = st.button("Execute Batch Analysis Pipeline", use_container_width=True)
+        with col_b: clear_state = st.button("Flush Batch Cache", use_container_width=True)
 
         if clear_state:
             st.session_state.processed_files = set()
@@ -971,16 +787,21 @@ def render_upload_module():
                 if name_lower.endswith(".pdf"):
                     try:
                         pages = convert_pdf_to_images(file_bytes)
-                        # FIXED PDF MULTI-PAGE FALLBACK PROCESSING BLOCK
                         for i, img in enumerate(pages):
-                            data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
-                            all_results.append({"page": i + 1, "source": uploaded_file.name, "data": data})
+                            response_data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
+                            # Multi-bill iteration split array handler
+                            for structure in response_data.get("bills", []):
+                                all_results.append({"page": i + 1, "source": uploaded_file.name, "data": structure})
                     except Exception as e:
-                        st.error(f"Error processing {uploaded_file.name}: {e}")
+                        st.error(f"Error parsing PDF frame structures: {e}")
                 else:
-                    img = Image.open(BytesIO(file_bytes)).convert("RGB")
-                    data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
-                    all_results.append({"page": 1, "source": uploaded_file.name, "data": data})
+                    try:
+                        img = Image.open(BytesIO(file_bytes)).convert("RGB")
+                        response_data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
+                        for structure in response_data.get("bills", []):
+                            all_results.append({"page": 1, "source": uploaded_file.name, "data": structure})
+                    except Exception as e:
+                        st.error(f"Error compiling image frame matrix: {e}")
 
                 st.session_state.processed_files.add(file_key)
             
@@ -991,35 +812,34 @@ def render_upload_module():
             df = build_batch_summary(st.session_state.current_results)
             render_metrics(df)
             
-            st.markdown('<div class="section-card">', unsafe_allow_html=True)
-            st.dataframe(df, use_container_width=True)
-            st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown('<h4>Verified Batch Matrix Overview</h4>', unsafe_allow_html=True)
+            st.dataframe(df.drop(columns=["items_raw"], errors="ignore"), use_container_width=True)
 
-            st.subheader("📦 Extracted Bill Items Detail")
-            for res in st.session_state.current_results:
-                if res.get("data") and res["data"].get("items"):
-                    st.markdown(f"**File: {res['source']} (Page {res['page']})**")
-                    st.dataframe(pd.DataFrame(res["data"]["items"]), use_container_width=True)
+            st.markdown('<h4>📦 Individual Sheet Ledger Breakdowns</h4>', unsafe_allow_html=True)
+            for _, row in df.iterrows():
+                st.markdown(f"**Establishment**: `{row['shop_name']}` | **Date**: `{row['bill_date']}` | **Source**: *{row['source']} (Page {row['page']})*")
+                st.dataframe(pd.DataFrame(row["items_raw"]), use_container_width=True)
 
             summary_text = make_share_text(df)
             s1, s2, s3 = st.columns(3)
-            with s1: st.link_button("📱 Share on WhatsApp", share_whatsapp(summary_text), use_container_width=True)
-            with s2: st.link_button("✈️ Share on Telegram", share_telegram(summary_text), use_container_width=True)
-            with s3: st.link_button("📧 Share by Email", share_email(summary_text), use_container_width=True)
+            with s1: st.link_button("📱 WhatsApp Report", share_whatsapp(summary_text), use_container_width=True)
+            with s2: st.link_button("✈️ Telegram Despatch", share_telegram(summary_text), use_container_width=True)
+            with s3: st.link_button("📧 Email Dispatch", share_email(summary_text), use_container_width=True)
 
             excel_data = build_excel_export(st.session_state.current_results)
             st.download_button(
-                "📥 Download Excel Report",
+                "📥 Download Compiled Excel Multi-Sheet Ledger",
                 data=excel_data,
-                file_name="AI_Processed_Bills_Summary.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                file_name=f"AI_Split_Bill_Ledger_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
             )
         else:
             if not uploaded_files:
-                st.info("Upload images or PDFs, then click Process All Files.")
+                st.info("Awaiting batch dispatch context. Populate file uploader stream and run analytical pipeline.")
 
     with tabs[1]:
-        st.subheader("Processing History")
+        st.subheader("Historical Local Ledger Log Persistence")
         with sqlite3.connect(DB_PATH) as conn:
             history_df = pd.read_sql_query("SELECT * FROM bills ORDER BY timestamp DESC", conn)
         st.dataframe(history_df, use_container_width=True)
@@ -1041,7 +861,7 @@ def main():
         do_login()
     else:
         render_upload_module()
-        if st.sidebar.button("Logout"):
+        if st.sidebar.button("Terminate Secure Session"):
             terminate_session()
 
 if __name__ == "__main__":
