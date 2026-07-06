@@ -1,8 +1,2 @@
 tesseract-ocr
 poppler-utils
-libtesseract-dev
-qrcode
-pyzbar
-opencv-python
-sqlalchemy
-psycopg2-binary
