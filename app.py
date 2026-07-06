@@ -1,878 +1,880 @@
+import base64
+import json
 import os
 import re
-import json
-import hashlib
 import sqlite3
-import zipfile
-import shutil
+import urllib.parse
 from datetime import datetime
 from io import BytesIO
-from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
 import streamlit as st
 from PIL import Image
 
 import openpyxl
-from openpyxl.styles import Font, PatternFill
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
-
-# ============================================
-# APP CONFIG
-# ============================================
-
-APP_TITLE = "Deep CSC AI Bill Processor V2"
-DB_PATH = "bills_v2.db"
-OUTPUT_DIR = "output"
-
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-# ============================================
-# SECURITY
-# ============================================
-
-def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
-
-def verify_password(password, hashed):
-    return hash_password(password) == hashed
-
-# ============================================
-# DEFAULT USERS
-# ============================================
-
-USERS = {
-    "admin": {
-        "password": hash_password("admin123"),
-        "role": "admin"
-    },
-    "operator": {
-        "password": hash_password("operator123"),
-        "role": "operator"
-    },
-    "viewer": {
-        "password": hash_password("viewer123"),
-        "role": "viewer"
-    }
-}
-
-# ============================================
-# DATABASE
-# ============================================
-
-def init_db():
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS bills(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            invoice_number TEXT,
-            shop_name TEXT,
-            bill_date TEXT,
-            gst_number TEXT,
-            total REAL,
-            calculated_total REAL,
-            status TEXT,
-            created_at TEXT
-        )
-        """)
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS audit_logs(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT,
-            action TEXT,
-            timestamp TEXT
-        )
-        """)
-        conn.commit()
-
-# ============================================
-# AUDIT LOG
-# ============================================
-
-def log_action(username, action):
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            """
-            INSERT INTO audit_logs (username, action, timestamp)
-            VALUES (?, ?, ?)
-            """,
-            (
-                username,
-                action,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            )
-        )
-        conn.commit()
-
-# ============================================
-# LOGIN
-# ============================================
-
-def login_screen():
-    st.title("🔐 Deep CSC Login")
-    username = st.text_input("Username")
-    password = st.text_input("Password", type="password")
-
-    if st.button("Login"):
-        if username in USERS:
-            if verify_password(password, USERS[username]["password"]):
-                st.session_state.logged_in = True
-                st.session_state.username = username
-                st.session_state.role = USERS[username]["role"]
-                log_action(username, "LOGIN")
-                st.rerun()
-        st.error("Invalid Login")
-
-# ============================================
-# SESSION INIT
-# ============================================
-
-def init_session():
-    if "logged_in" not in st.session_state:
-        st.session_state.logged_in = False
-    if "results" not in st.session_state:
-        st.session_state.results = []
-
-# ============================================
-# DUPLICATE DETECTOR
-# ============================================
-
-def generate_bill_hash(shop, bill_date, total):
-    raw = f"{shop}_{bill_date}_{total}"
-    return hashlib.md5(raw.encode()).hexdigest()
-
-try:
-    import google.generativeai as genai
-except:
-    genai = None
-
-try:
-    from openai import OpenAI
-except:
-    OpenAI = None
-
-try:
-    from google.cloud import vision
-except:
-    vision = None
-
-# ============================================
-# IMAGE PREPROCESSING
-# ============================================
-
-def preprocess_image(image):
-    image = image.convert("L")
-    image = image.point(lambda x: 0 if x < 150 else 255, "1")
-    return image
-
-# ============================================
-# GST VALIDATION
-# ============================================
-
-GST_REGEX = r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$"
-
-def validate_gst(gst):
-    if not gst:
-        return False
-    gst = re.sub(r"[^A-Z0-9]", "", str(gst).upper())
-    return bool(re.match(GST_REGEX, gst))
-
-# ============================================
-# INVOICE NUMBER EXTRACTION (FALLBACK)
-# ============================================
-
-def extract_invoice_number(text):
-    patterns = [
-        r"invoice\s*no\.?\s*[:\-]?\s*([A-Z0-9\-\/]+)",
-        r"bill\s*no\.?\s*[:\-]?\s*([A-Z0-9\-\/]+)",
-        r"inv\s*[:\-]?\s*([A-Z0-9\-\/]+)"
-    ]
-    text = str(text)
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            return match.group(1)
-    return "N/A"
-
-# ============================================
-# TOTAL EXTRACTION (FALLBACK)
-# ============================================
-
-def extract_total(text):
-    patterns = [
-        r"grand\s*total\s*[:\-]?\s*(\d+\.\d+)",
-        r"net\s*amount\s*[:\-]?\s*(\d+\.\d+)",
-        r"total\s*[:\-]?\s*(\d+\.\d+)"
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, text, re.IGNORECASE)
-        if match:
-            try:
-                return float(match.group(1))
-            except:
-                pass
-    return 0.0
-
-# ============================================
-# GEMINI SETUP
-# ============================================
-
-@st.cache_resource
-def setup_gemini():
-    if genai is None:
-        return None
-    api_key = st.secrets.get("GEMINI_API_KEY", "")
-    if not api_key:
-        return None
-    genai.configure(api_key=api_key)
-    return genai.GenerativeModel("gemini-2.5-flash")
-
-# ============================================
-# OPENAI SETUP
-# ============================================
-
-@st.cache_resource
-def setup_openai():
-    if OpenAI is None:
-        return None
-    api_key = st.secrets.get("OPENAI_API_KEY", "")
-    if not api_key:
-        return None
-    return OpenAI(api_key=api_key)
-
-# ============================================
-# GOOGLE VISION
-# ============================================
-
-@st.cache_resource
-def setup_google_vision():
-    if vision is None:
-        return None
-    return vision.ImageAnnotatorClient()
-
-# ============================================
-# OCR PROMPT
-# ============================================
-
-def build_ocr_prompt():
-    return """
-Extract invoice data accurately.
-Return ONLY a valid JSON object. Do not include markdown code blocks or any explanation text.
-
-{
-  "shop_name": "",
-  "invoice_number": "",
-  "bill_date": "",
-  "gst_number": "",
-  "items": [
-      {
-        "name": "",
-        "qty": "",
-        "rate": "",
-        "amount": ""
-      }
-  ],
-  "total": 0.0
-}
-"""
-
-# ============================================
-# GEMINI OCR
-# ============================================
-
-def run_gemini_ocr(model, image_bytes):
-    try:
-        response = model.generate_content(
-            [
-                build_ocr_prompt(),
-                {
-                    "mime_type": "image/jpeg",
-                    "data": image_bytes
-                }
-            ]
-        )
-        return response.text
-    except Exception as e:
-        return str(e)
-
-# ============================================
-# GOOGLE VISION OCR
-# ============================================
-
-def run_google_vision_ocr(client, image_bytes):
-    image = vision.Image(content=image_bytes)
-    response = client.document_text_detection(image=image)
-    if response.full_text_annotation:
-        return response.full_text_annotation.text
-    return ""
-
-# ============================================
-# OCR AUTO ROUTER
-# ============================================
-
-def perform_ocr(image, provider, gemini_model=None, openai_client=None, vision_client=None):
-    image = preprocess_image(image)
-    buf = BytesIO()
-    image.save(buf, format="JPEG")
-    image_bytes = buf.getvalue()
-
-    if provider == "Gemini":
-        return run_gemini_ocr(gemini_model, image_bytes)
-    elif provider == "Google Vision":
-        return run_google_vision_ocr(vision_client, image_bytes)
-    return ""
-
-# ============================================
-# FRAUD DETECTOR
-# ============================================
-
-def detect_fraud(bill_total, calculated_total):
-    difference = abs(bill_total - calculated_total)
-    return difference > 5
 
 try:
     import fitz
-except:
+except Exception:
     fitz = None
 
 try:
     import pypdfium2 as pdfium
-except:
+except Exception:
     pdfium = None
 
 try:
     from pdf2image import convert_from_bytes
-except:
+except Exception:
     convert_from_bytes = None
 
-# ============================================
-# PDF TO IMAGES
-# ============================================
+try:
+    import google.generativeai as genai
+except Exception:
+    genai = None
 
-def pdf_to_images(pdf_bytes):
-    images = []
-    if fitz:
-        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+try:
+    from openai import OpenAI
+except Exception:
+    OpenAI = None
+
+try:
+    from google.cloud import vision
+except Exception:
+    vision = None
+
+import warnings
+warnings.filterwarnings("ignore")
+
+APP_TITLE = "Deep CSC - AI Multi-Bill Processor Ultra"
+DB_PATH = "bills.db"
+OUTPUT_DIR = "output"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+def secret_or_default(key, default=""):
+    try:
+        return st.secrets[key]
+    except Exception:
+        return default
+
+DEFAULT_USERNAME = secret_or_default("APP_USERNAME", "admin")
+DEFAULT_PASSWORD = secret_or_default("APP_PASSWORD", "password123")
+
+def setup_page():
+    st.set_page_config(page_title=APP_TITLE, page_icon="🧾", layout="wide", initial_sidebar_state="expanded")
+
+def init_db():
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS bills (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                shop_name TEXT NOT NULL,
+                bill_date TEXT NOT NULL,
+                gst_number TEXT,
+                total REAL NOT NULL,
+                calculated_total REAL NOT NULL,
+                status TEXT NOT NULL,
+                timestamp TEXT NOT NULL,
+                UNIQUE(shop_name, bill_date, total) ON CONFLICT IGNORE
+            )
+            """
+        )
+
+def init_auth():
+    if "logged_in" not in st.session_state:
+        st.session_state.logged_in = False
+
+def init_runtime_state():
+    defaults = {
+        "selected_provider": "Gemini",
+        "theme_mode": "light",
+        "processed_files": set(),
+        "gemini_available": True,
+        "last_gemini_error_time": None,
+        "gemini_cooldown_seconds": 900,
+        "current_results": []
+    }
+    for k, v in defaults.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+def do_login():
+    st.markdown("""
+        <style>
+        .login-wrap {
+            max-width: 460px;
+            margin: 7vh auto;
+            padding: 28px;
+            border-radius: 24px;
+            background: rgba(255,255,255,0.85);
+            box-shadow: 0 20px 60px rgba(15, 23, 42, 0.14);
+            border: 1px solid rgba(148,163,184,0.18);
+            backdrop-filter: blur(10px);
+        }
+        .login-title {
+            font-size: 32px;
+            font-weight: 800;
+            margin: 0;
+            background: linear-gradient(to right, #0f172a, #4338ca);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .login-sub { margin-top: 8px; color: #64748b; font-size: 14px; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="login-wrap">', unsafe_allow_html=True)
+    st.markdown('<div class="login-title">🔐 System Login</div>', unsafe_allow_html=True)
+    st.markdown('<div class="login-sub">Secure access for AI bill dashboard</div>', unsafe_allow_html=True)
+
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+    if st.button("Login Server", use_container_width=True, key="login_btn"):
+        if username == DEFAULT_USERNAME and password == DEFAULT_PASSWORD:
+            st.session_state.logged_in = True
+            st.rerun()
+        else:
+            st.error("Invalid Username or Password Credentials")
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.stop()
+
+def terminate_session():
+    st.session_state.logged_in = False
+    for k in list(st.session_state.keys()):
+        if k != "logged_in":
+            del st.session_state[k]
+    st.rerun()
+
+def apply_theme_css():
+    theme_mode = st.session_state.get("theme_mode", "light")
+    if theme_mode == "dark":
+        st.markdown("""
+            <style>
+            .stApp { background: #0b1220; color: #e5e7eb; }
+            section[data-testid="stSidebar"] { background: #0f172a; }
+            section[data-testid="stSidebar"] * { color: #f8fafc !important; }
+            .stButton>button { background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important; color: white !important; }
+            </style>
+        """, unsafe_allow_html=True)
+    else:
+        st.markdown("""
+            <style>
+            .stApp { background: #f8fafc; color: #0f172a; }
+            section[data-testid="stSidebar"] { background: #0f172a; }
+            section[data-testid="stSidebar"] * { color: #f8fafc !important; }
+            </style>
+        """, unsafe_allow_html=True)
+
+def apply_css():
+    st.markdown("""
+        <style>
+        .stApp { background: radial-gradient(circle at top left, #ffffff 0%, #eef2ff 45%, #e2e8f0 100%); }
+        .deep-csc-header {
+            background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 45%, #312e81 100%);
+            padding: 28px 30px; border-radius: 28px; margin-bottom: 18px;
+            border: 1px solid rgba(255,255,255,0.10); box-shadow: 0 18px 40px rgba(15, 23, 42, 0.22);
+            display: flex; align-items: center; justify-content: space-between; gap: 18px; flex-wrap: wrap;
+        }
+        .branding-text h1 {
+            margin: 0; font-size: 34px !important; font-weight: 800;
+            background: linear-gradient(to right, #38bdf8, #c084fc, #f43f5e);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .branding-text p { margin: 6px 0 0 0; color: #cbd5e1; font-size: 14px; }
+        .branding-badge {
+            background: linear-gradient(135deg, #ec4899 0%, #8b5cf6 100%); color: white !important;
+            padding: 9px 16px; border-radius: 999px; font-size: 12px !important; font-weight: 700; text-transform: uppercase;
+        }
+        .csc-meta-badge {
+            background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.14);
+            color: #e2e8f0 !important; padding: 12px 16px; border-radius: 16px; font-size: 13px !important;
+        }
+        .metric-card {
+            background: rgba(255,255,255,0.82); border: 1px solid rgba(148,163,184,0.18);
+            border-radius: 22px; padding: 18px 20px; box-shadow: 0 14px 35px rgba(15, 23, 42, 0.10);
+        }
+        .metric-label { color: #64748b; font-size: 13px; margin-bottom: 8px; }
+        .metric-value { font-size: 28px; font-weight: 800; color: #0f172a; }
+        .metric-sub { color: #64748b; font-size: 13px; }
+        .section-card { background: rgba(255,255,255,0.78); border: 1px solid rgba(148,163,184,0.16); border-radius: 22px; padding: 18px; }
+        .stButton > button {
+            background: linear-gradient(135deg, #4f46e5 0%, #2563eb 100%) !important;
+            color: white !important; font-weight: 700 !important; border-radius: 14px !important;
+        }
+        .stButton > button p { color: white !important; }
+        .stTabs [data-baseweb="tab-list"] { gap: 10px; background: rgba(255,255,255,0.55); padding: 8px; border-radius: 18px; }
+        .stTabs [data-baseweb="tab"] { border-radius: 14px; padding: 10px 18px; font-weight: 700; }
+        .stTabs [aria-selected="true"] { background: linear-gradient(135deg, #0f172a 0%, #4338ca 100%) !important; color: white !important; }
+        div[data-testid="stDataFrame"] { border-radius: 18px; overflow: hidden; }
+        section[data-testid="stSidebar"] { background: linear-gradient(180deg, #0f172a 0%, #111827 100%); }
+        section[data-testid="stSidebar"] * { color: #f8fafc !important; }
+        .block-container { padding-top: 1.1rem; padding-bottom: 2rem; }
+        </style>
+    """, unsafe_allow_html=True)
+
+def metric_card(label, value, sub=""):
+    st.markdown(f"""
+        <div class="metric-card">
+            <div class="metric-label">{label}</div>
+            <div class="metric-value">{value}</div>
+            <div class="metric-sub">{sub}</div>
+        </div>
+    """, unsafe_allow_html=True)
+
+def render_metrics(df):
+    c1, c2, c3, c4 = st.columns(4)
+    total_files = len(df) if df is not None and not df.empty else 0
+    matched = int((df["status"] == "Matched").sum()) if total_files else 0
+    mismatch = int((df["status"] == "Mismatch").sum()) if total_files else 0
+    review = int((df["status"] == "Needs Review").sum()) if total_files else 0
+
+    with c1: metric_card("Total Bills Found", total_files, "Extracted from batch")
+    with c2: metric_card("Matched Bills", matched, "Sum verified perfectly")
+    with c3: metric_card("Mismatch / Review", mismatch + review, "Requires verification")
+    with c4: metric_card("OCR Provider", st.session_state.get("selected_provider", "Gemini"), "Active pipeline")
+
+@st.cache_resource
+def setup_gemini():
+    if genai is None: return None
+    api_key = secret_or_default("GEMINI_API_KEY", "").strip()
+    if not api_key: return None
+    genai.configure(api_key=api_key)
+    return genai.GenerativeModel("gemini-2.5-flash")
+
+@st.cache_resource
+def setup_openai():
+    api_key = secret_or_default("OPENAI_API_KEY", "").strip()
+    if not api_key or OpenAI is None: return None
+    return OpenAI(api_key=api_key)
+
+@st.cache_resource
+def setup_perplexity():
+    api_key = secret_or_default("PERPLEXITY_API_KEY", "").strip()
+    if not api_key or OpenAI is None: return None
+    return OpenAI(api_key=api_key, base_url="https://api.perplexity.ai")
+
+@st.cache_resource
+def setup_google_vision():
+    return vision.ImageAnnotatorClient() if vision is not None else None
+
+def validate_gst(gst_str):
+    if not gst_str: return False, "N/A"
+    gst_regex = r"^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$"
+    clean_gst = re.sub(r"[^A-Z0-9]", "", str(gst_str).upper())
+    return bool(re.match(gst_regex, clean_gst)), clean_gst
+
+def normalize_items(items):
+    if not isinstance(items, list): return []
+    cleaned = []
+    for it in items:
+        if not isinstance(it, dict): continue
+        qty_str = str(it.get("qty", "")).strip()
+        if qty_str in ["", "None", "null", "NULL", "false", "NaN"]:
+            qty_str = "1"
+        else:
+            num_match = re.search(r"[-+]?\d*\.\d+|\d+", qty_str)
+            if num_match: qty_str = num_match.group(0)
+            else: qty_str = "1"
+
+        rate = str(it.get("rate", "")).strip()
+        amount = str(it.get("amount", "")).strip()
+
+        if not amount and qty_str and rate:
+            try: amount = str(float(qty_str) * float(rate))
+            except Exception: amount = "0"
+
+        cleaned.append({
+            "name": it.get("name") or "Unknown Item",
+            "qty": qty_str,
+            "rate": rate or "0",
+            "amount": amount or "0"
+        })
+    return cleaned
+
+def parse_json_from_response(response_text):
+    raw = (response_text or "").strip().replace("```json", "").replace("```", "").strip()
+    m = re.search(r"\{.*\}|\[.*\]", raw, re.DOTALL)
+    if m: raw = m.group(0)
+    parsed = json.loads(raw)
+    if isinstance(parsed, list):
+        return {"bills": parsed}
+    if isinstance(parsed, dict) and "bills" not in parsed:
+        if "items" in parsed or "shop_name" in parsed:
+            return {"bills": [parsed]}
+    return parsed
+
+def safe_float(value):
+    if not value: return 0.0
+    try: return float(str(value).replace("₹", "").replace(",", "").replace(" ", "").strip())
+    except Exception: return 0.0
+
+def can_try_gemini():
+    if st.session_state.get("gemini_available", True): return True
+    last_error = st.session_state.get("last_gemini_error_time")
+    return (not last_error) or ((datetime.now() - last_error).total_seconds() >= st.session_state.get("gemini_cooldown_seconds", 900))
+
+def is_gemini_quota_error(err):
+    msg = str(err).lower()
+    return ("429" in msg) or ("quota" in msg) or ("resource_exhausted" in msg) or ("rate limit" in msg)
+
+def build_schema_prompt():
+    return """
+You are an expert multi-invoice intelligence extraction agent. 
+An inherent capability to detect MULTIPLE separate bills or receipts from a single page image is expected.
+Analyze the provided document image and look closely for horizontal/vertical demarcations, distinct header zones, or multiple standalone lists.
+
+Return ONLY a valid JSON object matching the exact schema below. Do not include any explanation or backticks.
+
+{
+  "bills": [
+    {
+      "shop_name": string or null,
+      "bill_date": string or null,
+      "gst_number": string or null,
+      "items": [{"name": string, "qty": string, "rate": string, "amount": string}],
+      "total": string or null
+    }
+  ]
+}
+
+Extraction Strategy Rules:
+1. "bills" is an array. If there is 1 bill, return 1 object inside the array. If there are multiple distinct bills captured on the page, split them cleanly into separate structural entities inside the array.
+2. For each bill, look for line items. Ensure you extract the item name, accurate quantity, rate, and total amount.
+3. CRITICAL QUANTITY RULE: Quantity must NEVER be blank or non-numeric. Look closely at columns like "Qty", "Pcs", "Nos", "Pkt", "Quantity", "मात्रा". If a specific quantity is omitted or represented implicitly, you MUST intelligently infer it or use "1" as a structural fallback. Never leave it empty.
+4. Extract every single line item visible on the document. Do not truncate.
+"""
+
+def image_to_bytes(image):
+    buf = BytesIO()
+    image.save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
+
+def preprocess_for_ocr(image):
+    return image
+
+def convert_pdf_to_images(file_bytes):
+    if fitz is not None:
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        images = []
         for page in doc:
-            pix = page.get_pixmap(matrix=fitz.Matrix(3, 3))
-            img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-            images.append(img)
+            pix = page.get_pixmap(matrix=fitz.Matrix(4, 4), alpha=False)
+            images.append(Image.frombytes("RGB", [pix.width, pix.height], pix.samples))
         doc.close()
         return images
-    if pdfium:
-        pdf = pdfium.PdfDocument(pdf_bytes)
+    if pdfium is not None:
+        pdf = pdfium.PdfDocument(file_bytes)
+        images = []
         for i in range(len(pdf)):
-            img = pdf[i].render(scale=4).to_pil()
-            images.append(img.convert("RGB"))
+            images.append(pdf[i].render(scale=4).to_pil().convert("RGB"))
         return images
-    if convert_from_bytes:
-        return convert_from_bytes(pdf_bytes, dpi=300)
-    return []
+    if convert_from_bytes is not None:
+        return convert_from_bytes(file_bytes, dpi=400)
+    raise RuntimeError("No PDF rendering library available.")
 
-# ============================================
-# ZIP EXTRACTOR
-# ============================================
+def extract_vision_text(vision_client, image):
+    img = vision.Image(content=image_to_bytes(image))
+    resp = vision_client.document_text_detection(image=img)
+    text = ""
+    if getattr(resp, "full_text_annotation", None):
+        text = getattr(resp.full_text_annotation, "text", "") or ""
+    return text.strip()
 
-def extract_zip(uploaded_zip):
-    extracted_files = []
-    temp_dir = "temp_zip"
-    if os.path.exists(temp_dir):
-        shutil.rmtree(temp_dir)
-    os.makedirs(temp_dir, exist_ok=True)
-    with zipfile.ZipFile(uploaded_zip) as zip_ref:
-        zip_ref.extractall(temp_dir)
-    for root, dirs, files in os.walk(temp_dir):
-        for file in files:
-            full_path = os.path.join(root, file)
-            extracted_files.append(full_path)
-    return extracted_files
+def heuristic_parse_from_text(text):
+    text = (text or "").strip()
+    if not text:
+        return {"bills": [{"shop_name": "Unknown Shop", "bill_date": None, "gst_number": None, "items": [], "total": "0"}]}
+    
+    lines = [x.strip() for x in text.splitlines() if x.strip()]
+    shop_name = lines[0][:80] if lines else "Unknown Shop"
+    
+    return {
+        "bills": [{
+            "shop_name": shop_name,
+            "bill_date": datetime.now().strftime("%Y-%m-%d"),
+            "gst_number": "N/A",
+            "items": [],
+            "total": "0"
+        }]
+    }
 
-# ============================================
-# FILE HASH
-# ============================================
-
-def generate_file_hash(file_bytes):
-    return hashlib.md5(file_bytes).hexdigest()
-
-def is_duplicate_file(file_hash, processed_hashes):
-    return file_hash in processed_hashes
-
-# ============================================
-# PROCESS SINGLE IMAGE
-# ============================================
-
-def process_single_image(image, provider, model_bundle):
+# ========================================================
+# UPDATED FUNCTION WITH THE REQUESTED REPLACEMENT LOGIC
+# ========================================================
+def try_gemini(model, image):
     try:
-        text = perform_ocr(
-            image=image,
-            provider=provider,
-            gemini_model=model_bundle.get("gemini"),
-            openai_client=model_bundle.get("openai"),
-            vision_client=model_bundle.get("vision")
-        )
-        return text
-    except Exception as e:
-        return str(e)
-
-# ============================================
-# MULTI THREAD OCR
-# ============================================
-
-def process_images_parallel(images, provider, model_bundle):
-    results = []
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = [executor.submit(process_single_image, img, provider, model_bundle) for img in images]
-        for future in futures:
-            try:
-                results.append(future.result())
-            except Exception:
-                pass
-    return results
-
-# ============================================
-# PDF PROCESSOR
-# ============================================
-
-def process_pdf_file(pdf_bytes, provider, model_bundle):
-    images = pdf_to_images(pdf_bytes)
-    return process_images_parallel(images, provider, model_bundle)
-
-# ============================================
-# IMAGE PROCESSOR
-# ============================================
-
-def process_image_file(image_bytes, provider, model_bundle):
-    image = Image.open(BytesIO(image_bytes)).convert("RGB")
-    return process_single_image(image, provider, model_bundle)
-
-# ============================================
-# PROGRESS BAR
-# ============================================
-
-def update_progress(current, total, progress_bar):
-    if total == 0:
-        return
-    percent = current / total
-    progress_bar.progress(percent)
-
-# ============================================
-# BATCH PROCESSOR (FIXED MECHANISM & DB WORK)
-# ============================================
-
-def process_batch(uploaded_files, provider, model_bundle):
-    all_results = []
-    processed_hashes = set()
-    progress_bar = st.progress(0)
-    total_files = len(uploaded_files)
-    current = 0
-
-    for file in uploaded_files:
-        try:
-            file_bytes = file.getvalue()
-            file_hash = generate_file_hash(file_bytes)
-
-            if is_duplicate_file(file_hash, processed_hashes):
-                continue
-            processed_hashes.add(file_hash)
-
-            if file.name.lower().endswith(".pdf"):
-                ocr_outputs = process_pdf_file(file_bytes, provider, model_bundle)
-                ocr_raw = " ".join(ocr_outputs) if isinstance(ocr_outputs, list) else str(ocr_outputs)
-            else:
-                ocr_raw = process_image_file(file_bytes, provider, model_bundle)
-
-            # JSON Parsing and Structured Normalisation
-            parsed_data = {}
-            try:
-                clean_json = re.sub(r"```json\s*|```", "", ocr_raw).strip()
-                parsed_data = json.loads(clean_json)
-            except Exception:
-                parsed_data = {
-                    "invoice_number": extract_invoice_number(ocr_raw),
-                    "shop_name": "Unknown Vendor",
-                    "bill_date": datetime.now().strftime("%Y-%m-%d"),
-                    "gst_number": "",
-                    "total": extract_total(ocr_raw),
-                    "items": []
-                }
-
-            # Business math calculation check
-            try:
-                calc_total = sum(float(i.get('amount') or 0) for i in parsed_data.get('items', []))
-            except:
-                calc_total = 0.0
-
-            try:
-                b_total = float(parsed_data.get("total") or 0)
-            except:
-                b_total = 0.0
-
-            if calc_total == 0.0:
-                calc_total = b_total
-
-            status = "Mismatch" if detect_fraud(b_total, calc_total) else "Matched"
-            parsed_data["status"] = status
-
-            # SAVE SECURELY INTO SQLITE
-            with sqlite3.connect(DB_PATH) as conn:
-                conn.execute("""
-                    INSERT INTO bills (invoice_number, shop_name, bill_date, gst_number, total, calculated_total, status, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    str(parsed_data.get("invoice_number", "")),
-                    str(parsed_data.get("shop_name", "")),
-                    str(parsed_data.get("bill_date", "")),
-                    str(parsed_data.get("gst_number", "")),
-                    b_total,
-                    calc_total,
-                    status,
-                    datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                ))
-                conn.commit()
-
-            all_results.append(parsed_data)
-            current += 1
-            update_progress(current, total_files, progress_bar)
-        except Exception as e:
-            st.error(f"{file.name}: {e}")
-
-    return all_results
-
-try:
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-    from reportlab.lib.styles import getSampleStyleSheet
-except:
-    SimpleDocTemplate = None
-
-try:
-    import plotly.express as px
-except:
-    px = None
-
-# ============================================
-# BUILD SUMMARY DATAFRAME
-# ============================================
-
-def build_summary_dataframe(results):
-    rows = []
-    for item in results:
-        rows.append({
-            "Invoice": item.get("invoice_number", ""),
-            "Shop": item.get("shop_name", ""),
-            "Date": item.get("bill_date", ""),
-            "GST": item.get("gst_number", ""),
-            "Total": float(item.get("total") or 0),
-            "Status": item.get("status", "Matched")
-        })
-    return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["Invoice", "Shop", "Date", "GST", "Total", "Status"])
-
-# ============================================
-# EXCEL EXPORT PRO
-# ============================================
-
-def export_excel_pro(df):
-    output = BytesIO()
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Invoice Summary"
-
-    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
-    header_font = Font(bold=True, color="FFFFFF")
-
-    headers = list(df.columns)
-    for col_num, header in enumerate(headers, start=1):
-        cell = ws.cell(row=1, column=col_num)
-        cell.value = header
-        cell.fill = header_fill
-        cell.font = header_font
-
-    for row_num, row in enumerate(df.values, start=2):
-        for col_num, value in enumerate(row, start=1):
-            ws.cell(row=row_num, column=col_num).value = value
-
-    for column in ws.columns:
-        ws.column_dimensions[get_column_letter(column[0].column)].width = 25
-
-    wb.save(output)
-    output.seek(0)
-    return output.getvalue()
-
-# ============================================
-# PDF REPORT
-# ============================================
-
-def export_pdf_report(df):
-    if SimpleDocTemplate is None:
-        return None
-    pdf_file = BytesIO()
-    doc = SimpleDocTemplate(pdf_file)
-    styles = getSampleStyleSheet()
-    story = []
-
-    story.append(Paragraph("AI Invoice Analysis Report", styles["Title"]))
-    story.append(Spacer(1, 12))
-    story.append(Paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["Normal"]))
-    story.append(Spacer(1, 20))
-
-    for _, row in df.iterrows():
-        story.append(
-            Paragraph(
-                f"""
-                Invoice: {row['Invoice']}<br/>
-                Shop: {row['Shop']}<br/>
-                Total: ₹{row['Total']}<br/>
-                Status: {row['Status']}
-                """,
-                styles["BodyText"]
-            )
-        )
-        story.append(Spacer(1, 10))
-
-    doc.build(story)
-    pdf_file.seek(0)
-    return pdf_file.getvalue()
-
-# ============================================
-# KPI METRICS
-# ============================================
-
-def render_kpi_metrics(df):
-    if df.empty:
-        return
-    total_bills = len(df)
-    matched = len(df[df["Status"] == "Matched"])
-    mismatch = len(df[df["Status"] == "Mismatch"])
-    revenue = df["Total"].sum()
-
-    c1, c2, c3, c4 = st.columns(4)
-    with c1:
-        st.metric("Total Bills", total_bills)
-    with c2:
-        st.metric("Matched", matched)
-    with c3:
-        st.metric("Mismatch", mismatch)
-    with c4:
-        st.metric("Revenue", f"₹{revenue:,.2f}")
-
-# ============================================
-# CHARTS
-# ============================================
-
-def render_status_chart(df):
-    if px is None or df.empty:
-        return
-    status_count = df["Status"].value_counts().reset_index()
-    status_count.columns = ["Status", "Count"]
-    fig = px.pie(status_count, names="Status", values="Count", title="Invoice Status Distribution")
-    st.plotly_chart(fig, use_container_width=True)
-
-def render_daily_sales(df):
-    if px is None or df.empty or "Date" not in df.columns:
-        return
-    sales = df.groupby("Date")["Total"].sum().reset_index()
-    fig = px.bar(sales, x="Date", y="Total", title="Daily Sales")
-    st.plotly_chart(fig, use_container_width=True)
-
-def render_top_vendors(df):
-    if px is None or df.empty:
-        return
-    vendors = df.groupby("Shop")["Total"].sum().reset_index()
-    vendors = vendors.sort_values("Total", ascending=False).head(10)
-    fig = px.bar(vendors, x="Shop", y="Total", title="Top Vendors")
-    st.plotly_chart(fig, use_container_width=True)
-
-def gst_summary(df):
-    valid = 0
-    invalid = 0
-    if "GST" in df.columns:
-        for gst in df["GST"]:
-            if validate_gst(gst):
-                valid += 1
-            else:
-                invalid += 1
-    return {"valid": valid, "invalid": invalid}
-
-def render_analytics_dashboard(df):
-    st.header("📊 Analytics Dashboard")
-    if df.empty:
-        st.info("No logs/data recorded yet.")
-        return
-    render_kpi_metrics(df)
-    st.divider()
-    render_status_chart(df)
-    st.divider()
-    render_daily_sales(df)
-    st.divider()
-    render_top_vendors(df)
-
-    gst_data = gst_summary(df)
-    st.success(f"Valid GST: {gst_data['valid']}")
-    st.warning(f"Invalid GST: {gst_data['invalid']}")
-
-# ============================================
-# SYSTEM PAGES
-# ============================================
-
-def create_backup():
-    try:
-        backup_dir = "backups"
-        os.makedirs(backup_dir, exist_ok=True)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_file = os.path.join(backup_dir, f"backup_{timestamp}.db")
-        if os.path.exists(DB_PATH):
-            shutil.copy(DB_PATH, backup_file)
-            return True
-        return False
-    except Exception:
-        return False
-
-def show_history_page():
-    st.header("📜 Processing History")
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            df = pd.read_sql_query("SELECT * FROM bills ORDER BY id DESC", conn)
-        st.dataframe(df, use_container_width=True)
-    except Exception as e:
-        st.error(str(e))
-
-def show_audit_logs():
-    st.header("🔍 Audit Logs")
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            df = pd.read_sql_query("SELECT * FROM audit_logs ORDER BY id DESC", conn)
-        st.dataframe(df, use_container_width=True)
-    except Exception as e:
-        st.error(str(e))
-
-def settings_page():
-    st.header("⚙️ Settings")
-    if st.button("Create Database Backup"):
-        if create_backup():
-            st.success("Backup Created")
-        else:
-            st.error("Backup Failed (No database initialized yet)")
-
-def processing_page():
-    st.header("🧾 AI Invoice Processor")
-    provider = st.selectbox("OCR Provider", ["Gemini", "Google Vision"])
-    uploaded_files = st.file_uploader("Upload Files", type=["jpg", "jpeg", "png", "pdf"], accept_multiple_files=True)
-
-    if st.button("Start Processing"):
-        if not uploaded_files:
-            st.warning("Upload files first")
-            return
-
-        model_bundle = {
-            "gemini": setup_gemini(),
-            "vision": setup_google_vision(),
-            "openai": setup_openai()
+        img_payload = {
+            "data": image_to_bytes(image),
+            "mime_type": "image/jpeg"
         }
 
-        results = process_batch(uploaded_files, provider, model_bundle)
-        st.success(f"Processed {len(results)} files successfully!")
-        st.session_state.results = results
-
-def dashboard_page():
-    if "results" not in st.session_state or not st.session_state.results:
-        st.header("📊 Dashboard")
-        st.info("No active session data found. Showing historical entries from database:")
-        try:
-            with sqlite3.connect(DB_PATH) as conn:
-                df_db = pd.read_sql_query("SELECT * FROM bills", conn)
-            if not df_db.empty:
-                # Format to map build_summary_dataframe structural elements
-                df_db.columns = ["id", "invoice_number", "shop_name", "bill_date", "gst_number", "total", "calculated_total", "status", "created_at"]
-                formatted_results = df_db.to_dict(orient="records")
-                df = build_summary_dataframe(formatted_results)
-                render_analytics_dashboard(df)
-            else:
-                st.warning("Database handles are completely clean.")
-        except Exception as e:
-            st.error(str(e))
-        return
-
-    df = build_summary_dataframe(st.session_state.results)
-    render_analytics_dashboard(df)
-
-def export_page():
-    st.header("📥 Export Center")
-    if "results" not in st.session_state or not st.session_state.results:
-        st.warning("Nothing found in active buffer to export.")
-        return
-
-    df = build_summary_dataframe(st.session_state.results)
-    excel_file = export_excel_pro(df)
-
-    st.download_button(
-        "Download Excel",
-        excel_file,
-        file_name="Invoice_Report.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
-
-    pdf_file = export_pdf_report(df)
-    if pdf_file:
-        st.download_button(
-            "Download PDF",
-            pdf_file,
-            file_name="Invoice_Report.pdf",
-            mime="application/pdf"
+        resp = model.generate_content(
+            [build_schema_prompt(), img_payload],
+            generation_config={
+                "temperature": 0,
+                "response_mime_type": "application/json"
+            },
         )
 
-# ============================================
-# SIDEBAR NAVIGATION
-# ============================================
+        data = parse_json_from_response(
+            getattr(resp, "text", "")
+        )
 
-def sidebar_navigation():
-    st.sidebar.title("Deep CSC V2")
-    role = st.session_state.get("role", "viewer")
+        st.session_state.gemini_available = True
 
-    pages = ["Dashboard", "Invoice Processor", "Export", "History", "Settings"]
-    if role == "admin":
-        pages.append("Audit Logs")
+        if not isinstance(data, dict):
+            return {"bills": []}, None
 
-    return st.sidebar.radio("Navigation", pages)
+        bills = data.get("bills", [])
 
-def logout():
-    if st.sidebar.button("Logout"):
-        username = st.session_state.get("username", "Unknown")
-        log_action(username, "LOGOUT")
-        st.session_state.clear()
+        if not isinstance(bills, list):
+            bills = []
+
+        return {"bills": bills}, None
+
+    except Exception as e:
+        if is_gemini_quota_error(e):
+            st.session_state.gemini_available = False
+            st.session_state.last_gemini_error_time = datetime.now()
+
+        return {"bills": []}, e
+
+def try_perplexity(client, image):
+    b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
+    resp = client.chat.completions.create(
+        model=secret_or_default("PERPLEXITY_MODEL", "sonar-pro"),
+        messages=[
+            {"role": "system", "content": build_schema_prompt()},
+            {"role": "user", "content": [
+                {"type": "text", "text": "Extract invoices from this image structured in the requested array structure."},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+            ]},
+        ],
+        temperature=0.0,
+    )
+    return parse_json_from_response(resp.choices[0].message.content)
+
+def try_openai(client, image):
+    b64 = base64.b64encode(image_to_bytes(image)).decode("utf-8")
+    resp = client.chat.completions.create(
+        model=secret_or_default("OPENAI_MODEL", "gpt-4o-mini"),
+        messages=[
+            {"role": "system", "content": build_schema_prompt()},
+            {"role": "user", "content": [
+                {"type": "text", "text": "Extract billing arrays from this snapshot."},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+            ]},
+        ],
+        response_format={"type": "json_object"},
+    )
+    return parse_json_from_response(resp.choices[0].message.content)
+
+def analyze_with_auto_fallback(model_bundle, image, forced=None):
+    image = preprocess_for_ocr(image)
+    order = ["Gemini", "Google Vision OCR", "Perplexity", "OpenAI"]
+    if forced in order:
+        order = [forced] + [x for x in order if x != forced]
+
+    for provider in order:
+        try:
+            if provider == "Gemini" and model_bundle.get("gemini") and can_try_gemini():
+                data, _ = try_gemini(model_bundle["gemini"], image)
+                if data and "bills" in data: return data
+            elif provider == "Google Vision OCR" and model_bundle.get("vision_client"):
+                text = extract_vision_text(model_bundle["vision_client"], image)
+                if text: return heuristic_parse_from_text(text)
+            elif provider == "Perplexity" and model_bundle.get("perplexity"):
+                res = try_perplexity(model_bundle["perplexity"], image)
+                if res and "bills" in res: return res
+            elif provider == "OpenAI" and model_bundle.get("openai"):
+                res = try_openai(model_bundle["openai"], image)
+                if res and "bills" in res: return res
+        except Exception:
+            continue
+
+    return {"bills": []}
+
+def insert_bill(shop, date, gst, total, calc_total, status):
+    with sqlite3.connect(DB_PATH, timeout=30) as conn:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO bills (shop_name, bill_date, gst_number, total, calculated_total, status, timestamp)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (shop, date, gst, float(total), float(calc_total), status, datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+        )
+        conn.commit()
+
+def sanitize_sheet_name(name, fallback="Sheet"):
+    name = re.sub(r"[\[\]\*\?\/\\:]", "_", str(name)).strip()
+    name = re.sub(r"\s+", " ", name)
+    return (name[:25] or fallback)
+
+def build_excel_export(results):
+    buffer = BytesIO()
+    wb = openpyxl.Workbook()
+    
+    ws1 = wb.active
+    ws1.title = "Summary Dashboard"
+    ws1.views.sheetView[0].showGridLines = True
+
+    navy_dark = "1F4E78"
+    navy_zebra = "F2F4F8"
+    white = "FFFFFF"
+    gray_border = "D9D9D9"
+
+    font_title = Font(name="Calibri", size=16, bold=True, color="1F4E78")
+    font_section = Font(name="Calibri", size=12, bold=True, color="1F4E78")
+    font_header = Font(name="Calibri", size=11, bold=True, color=white)
+    font_bold = Font(name="Calibri", size=11, bold=True)
+    font_regular = Font(name="Calibri", size=11)
+
+    fill_header = PatternFill(start_color=navy_dark, end_color=navy_dark, fill_type="solid")
+    fill_zebra = PatternFill(start_color=navy_zebra, end_color=navy_zebra, fill_type="solid")
+
+    thin_side = Side(border_style="thin", color=gray_border)
+    border_all = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+    border_total = Border(top=Side(border_style="thin", color="000000"), bottom=Side(border_style="double", color="000000"))
+
+    ws1["A1"] = "AI OCR PROCESSOR - INVOICE BATCH SUMMARY"
+    ws1["A1"].font = font_title
+    ws1["A2"] = f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    ws1["A2"].font = Font(name="Calibri", size=11, italic=True)
+
+    ws1["A4"] = "1. Document-wise Statement Breakdown"
+    ws1["A4"].font = font_section
+
+    headers_bill = ["Sr No.", "Source File / Page", "Shop / Vendor Name", "Date", "Original Total", "Calculated Total", "Status"]
+    for col_num, h in enumerate(headers_bill, 1):
+        cell = ws1.cell(row=5, column=col_num, value=h)
+        cell.font = font_header
+        cell.fill = fill_header
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    ws2 = wb.create_sheet(title="Detailed Transactions")
+    ws2.views.sheetView[0].showGridLines = True
+    headers_det = ["Source File", "Shop Name", "Date", "Item Name / Particulars", "Qty", "Rate", "Extracted Amount"]
+    for col_num, h in enumerate(headers_det, 1):
+        cell = ws2.cell(row=1, column=col_num, value=h)
+        cell.font = font_header
+        cell.fill = fill_header
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    det_idx = 2
+    row_idx = 6
+
+    rendered_fingerprints = set()
+
+    for idx, item in enumerate(results):
+        source = item.get("source", "Unknown")
+        page = item.get("page", 1)
+        d = item.get("data") or {}
+
+        shop = str(d.get("shop_name") or "Unknown Shop").strip()
+        date_str = str(d.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
+        orig_total = safe_float(d.get("total"))
+
+        items = normalize_items(d.get("items"))
+        calc_total = 0.0
+        
+        for it in items:
+            amt = safe_float(it.get("amount")) or (safe_float(it.get("qty")) * safe_float(it.get("rate")))
+            calc_total += amt
+
+        if orig_total == 0.0 and calc_total > 0:
+            orig_total = calc_total
+
+        fingerprint = f"{shop}_{date_str}_{orig_total:.2f}"
+        if fingerprint in rendered_fingerprints:
+            continue
+        rendered_fingerprints.add(fingerprint)
+
+        for it in items:
+            amt = safe_float(it.get("amount")) or (safe_float(it.get("qty")) * safe_float(it.get("rate")))
+            ws2.cell(row=det_idx, column=1, value=source)
+            ws2.cell(row=det_idx, column=2, value=shop)
+            ws2.cell(row=det_idx, column=3, value=date_str)
+            ws2.cell(row=det_idx, column=4, value=it.get("name", "Unknown"))
+            ws2.cell(row=det_idx, column=5, value=safe_float(it.get("qty")))
+            ws2.cell(row=det_idx, column=6, value=safe_float(it.get("rate")))
+            ws2.cell(row=det_idx, column=7, value=amt).number_format = "₹#,##0.00"
+            for c in range(1, 8):
+                cell = ws2.cell(row=det_idx, column=c)
+                cell.font = font_regular
+                cell.border = border_all
+                if det_idx % 2 == 1: cell.fill = fill_zebra
+            det_idx += 1
+
+        status = "Needs Review" if orig_total <= 0 else ("Matched" if abs(calc_total - orig_total) < 1 else "Mismatch")
+
+        ws1.cell(row=row_idx, column=1, value=row_idx - 5).alignment = Alignment(horizontal="center")
+        ws1.cell(row=row_idx, column=2, value=f"{source} (P.{page})")
+        ws1.cell(row=row_idx, column=3, value=shop)
+        ws1.cell(row=row_idx, column=4, value=date_str).alignment = Alignment(horizontal="center")
+        
+        c_orig = ws1.cell(row=row_idx, column=5, value=orig_total)
+        c_orig.number_format = "₹#,##0.00"
+        
+        c_calc = ws1.cell(row=row_idx, column=6, value=calc_total)
+        c_calc.number_format = "₹#,##0.00"
+        
+        ws1.cell(row=row_idx, column=7, value=status).alignment = Alignment(horizontal="center")
+
+        for c in range(1, 8):
+            cell = ws1.cell(row=row_idx, column=c)
+            cell.font = font_regular
+            cell.border = border_all
+            if row_idx % 2 == 1: cell.fill = fill_zebra
+
+        clean_shop_title = sanitize_sheet_name(f"B{row_idx-5}_{shop}")
+        ws_bill = wb.create_sheet(title=clean_shop_title)
+        ws_bill.views.sheetView[0].showGridLines = True
+        
+        ws_bill.cell(row=1, column=1, value=f"Vendor: {shop}").font = font_bold
+        ws_bill.cell(row=2, column=1, value=f"Date: {date_str}").font = font_regular
+        
+        headers_b = ["Item Name / Particulars", "Qty", "Rate", "Amount"]
+        for col_v, hv in enumerate(headers_b, 1):
+            h_cell = ws_bill.cell(row=4, column=col_v, value=hv)
+            h_cell.font = font_header
+            h_cell.fill = fill_header
+            h_cell.alignment = Alignment(horizontal="center")
+
+        sub_idx = 5
+        for it in items:
+            ws_bill.cell(row=sub_idx, column=1, value=it.get("name"))
+            ws_bill.cell(row=sub_idx, column=2, value=safe_float(it.get("qty")))
+            ws_bill.cell(row=sub_idx, column=3, value=safe_float(it.get("rate"))).number_format = "₹#,##0.00"
+            amt_calc = safe_float(it.get("amount")) or (safe_float(it.get("qty")) * safe_float(it.get("rate")))
+            ws_bill.cell(row=sub_idx, column=4, value=amt_calc).number_format = "₹#,##0.00"
+            for col_v in range(1, 5):
+                cell_v = ws_bill.cell(row=sub_idx, column=col_v)
+                cell_v.font = font_regular
+                cell_v.border = border_all
+            sub_idx += 1
+            
+        ws_bill.cell(row=sub_idx, column=1, value="Total Summary").font = font_bold
+        tot_cell = ws_bill.cell(row=sub_idx, column=4, value=calc_total)
+        tot_cell.font = font_bold
+        tot_cell.number_format = "₹#,##0.00"
+        tot_cell.border = border_total
+
+        for col_v in range(1, 5):
+            ws_bill.column_dimensions[get_column_letter(col_v)].width = 22
+
+        row_idx += 1
+
+    if row_idx > 6:
+        ws1.cell(row=row_idx, column=3, value="Grand Total Summary").font = font_bold
+        cell_sum_e = ws1.cell(row=row_idx, column=5, value=f"=SUM(E6:E{row_idx-1})")
+        cell_sum_e.font = font_bold
+        cell_sum_e.number_format = "₹#,##0.00"
+        cell_sum_e.border = border_total
+        
+        cell_sum_f = ws1.cell(row=row_idx, column=6, value=f"=SUM(F6:F{row_idx-1})")
+        cell_sum_f.font = font_bold
+        cell_sum_f.number_format = "₹#,##0.00"
+        cell_sum_f.border = border_total
+
+    for col in range(1, 8):
+        ws1.column_dimensions[get_column_letter(col)].width = 20
+    for col in range(1, 8):
+        ws2.column_dimensions[get_column_letter(col)].width = 20
+
+    wb.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+def build_batch_summary(results):
+    rows = []
+    seen_fingerprints = set()
+    
+    for item in results:
+        d = item.get("data")
+        if d:
+            shop = str(d.get("shop_name") or "Unknown Shop").strip()
+            bill_date = str(d.get("bill_date") or datetime.now().strftime("%Y-%m-%d")).strip()
+            
+            items = normalize_items(d.get("items"))
+            calc_total = 0.0
+            for it in items:
+                calc_total += safe_float(it.get("amount")) or (safe_float(it.get("qty")) * safe_float(it.get("rate")))
+                
+            total = safe_float(d.get("total"))
+            if total == 0.0 and calc_total > 0:
+                total = calc_total
+
+            fingerprint = f"{shop}_{bill_date}_{total:.2f}"
+            if fingerprint in seen_fingerprints:
+                continue
+            seen_fingerprints.add(fingerprint)
+            
+            status = "Needs Review" if total <= 0 else ("Matched" if abs(calc_total - total) < 1 else "Mismatch")
+            
+            try: insert_bill(shop, bill_date, d.get("gst_number"), total, calc_total, status)
+            except Exception: pass
+
+            rows.append({
+                "page": item.get("page"),
+                "source": item.get("source"),
+                "shop_name": shop,
+                "bill_date": bill_date,
+                "gst_number": d.get("gst_number") or "N/A",
+                "bill_total": total,
+                "calculated_total": calc_total,
+                "difference": abs(calc_total - total),
+                "status": status,
+                "items_raw": items
+            })
+    return pd.DataFrame(rows)
+
+def render_theme_toggle(location="main"):
+    mode = st.radio("Theme", ["light", "dark"], horizontal=True, index=0 if st.session_state.get("theme_mode", "light") == "light" else 1, key=f"theme_radio_{location}")
+    if mode != st.session_state.get("theme_mode", "light"):
+        st.session_state["theme_mode"] = mode
         st.rerun()
 
-# ============================================
-# MAIN APPLICATION ENGINE
-# ============================================
+def make_share_text(df=None):
+    total = len(df) if df is not None and not df.empty else 0
+    matched = int((df["status"] == "Matched").sum()) if total else 0
+    mismatch = int((df["status"] == "Mismatch").sum()) if total else 0
+    review = int((df["status"] == "Needs Review").sum()) if total else 0
+    return f"{APP_TITLE}\nFiles Extracted: {total}\nMatched: {matched}\nMismatch: {mismatch}\nReview Required: {review}"
+
+def share_whatsapp(text): return "https://wa.me/?text=" + urllib.parse.quote(text)
+def share_telegram(text): return "https://t.me/share/url?url=&text=" + urllib.parse.quote(text)
+def share_email(text, subject="AI Multi-Bill Summary Report"): return "mailto:?subject=" + urllib.parse.quote(subject) + "&body=" + urllib.parse.quote(text)
+
+def render_upload_module():
+    st.markdown("""
+        <div class="deep-csc-header">
+            <div class="branding-text">
+                <h1>🧾 AI Intelligent Multi-Bill OCR Processor</h1>
+                <p>One-Page Multi-Bill Segregation & Verified Transaction Ledger Extraction Engine.</p>
+            </div>
+            <div class="csc-meta-badge">📍 <b>Deep CSC</b><br>👤 Owner: Deepak | ID: 256423250015</div>
+            <div class="branding-badge">Ultra Build</div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    tabs = st.tabs(["📷 Scan Pipeline", "🕘 History Logs", "⚙️ Preferences"])
+
+    with tabs[0]:
+        providers = ["Gemini", "Google Vision OCR", "Perplexity", "OpenAI"]
+        st.session_state.selected_provider = st.selectbox("Select OCR Provider Architecture", providers, index=providers.index("Gemini"))
+
+        uploaded_files = st.file_uploader(
+            "Upload Single/Multi-Bill Invoices (Images or PDFs)",
+            type=["jpg", "jpeg", "png", "pdf"],
+            accept_multiple_files=True
+        )
+
+        col_a, col_b = st.columns(2)
+        with col_a: process_now = st.button("Execute Batch Analysis Pipeline", use_container_width=True)
+        with col_b: clear_state = st.button("Flush Batch Cache", use_container_width=True)
+
+        if clear_state:
+            st.session_state.processed_files = set()
+            st.session_state.current_results = []
+            st.rerun()
+
+        model_bundle = {
+            "vision_client": setup_google_vision(),
+            "gemini": setup_gemini(),
+            "perplexity": setup_perplexity(),
+            "openai": setup_openai(),
+        }
+
+        if uploaded_files and process_now:
+            all_results = []
+            for uploaded_file in uploaded_files:
+                file_key = f"{uploaded_file.name}_{uploaded_file.size}"
+                if file_key in st.session_state.processed_files:
+                    continue
+
+                file_bytes = uploaded_file.getvalue()
+                name_lower = uploaded_file.name.lower()
+
+                if name_lower.endswith(".pdf"):
+                    try:
+                        pages = convert_pdf_to_images(file_bytes)
+                        for i, img in enumerate(pages):
+                            response_data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
+                            for structure in response_data.get("bills", []):
+                                all_results.append({"page": i + 1, "source": uploaded_file.name, "data": structure})
+                    except Exception as e:
+                        st.error(f"Error parsing PDF frame structures: {e}")
+                else:
+                    try:
+                        img = Image.open(BytesIO(file_bytes)).convert("RGB")
+                        response_data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
+                        for structure in response_data.get("bills", []):
+                            all_results.append({"page": 1, "source": uploaded_file.name, "data": structure})
+                    except Exception as e:
+                        st.error(f"Error compiling image frame matrix: {e}")
+
+                st.session_state.processed_files.add(file_key)
+            
+            if all_results:
+                st.session_state.current_results.extend(all_results)
+
+        if st.session_state.current_results:
+            df = build_batch_summary(st.session_state.current_results)
+            render_metrics(df)
+            
+            st.markdown('<h4>Verified Batch Matrix Overview</h4>', unsafe_allow_html=True)
+            st.dataframe(df.drop(columns=["items_raw"], errors="ignore"), use_container_width=True)
+
+            st.markdown('<h4>📦 Individual Sheet Ledger Breakdowns</h4>', unsafe_allow_html=True)
+            for _, row in df.iterrows():
+                st.markdown(f"**Establishment**: `{row['shop_name']}` | **Date**: `{row['bill_date']}` | **Source**: *{row['source']} (Page {row['page']})*")
+                st.dataframe(pd.DataFrame(row["items_raw"]), use_container_width=True)
+
+            summary_text = make_share_text(df)
+            s1, s2, s3 = st.columns(3)
+            with s1: st.link_button("📱 WhatsApp Report", share_whatsapp(summary_text), use_container_width=True)
+            with s2: st.link_button("✈️ Telegram Despatch", share_telegram(summary_text), use_container_width=True)
+            with s3: st.link_button("📧 Email Dispatch", share_email(summary_text), use_container_width=True)
+
+            excel_data = build_excel_export(st.session_state.current_results)
+            st.download_button(
+                "📥 Download Compiled Excel Multi-Sheet Ledger",
+                data=excel_data,
+                file_name=f"AI_Split_Bill_Ledger_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        else:
+            if not uploaded_files:
+                st.info("Awaiting batch dispatch context. Populate file uploader stream and run analytical pipeline.")
+
+    with tabs[1]:
+        st.subheader("Historical Local Ledger Log Persistence")
+        with sqlite3.connect(DB_PATH) as conn:
+            history_df = pd.read_sql_query("SELECT * FROM bills ORDER BY timestamp DESC", conn)
+        st.dataframe(history_df, use_container_width=True)
+
+    with tabs[2]:
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
+        render_theme_toggle("settings")
+        st.markdown('</div>', unsafe_allow_html=True)
 
 def main():
-    st.set_page_config(
-        page_title="Deep CSC AI Processor V2",
-        page_icon="🧾",
-        layout="wide"
-    )
-
+    setup_page()
     init_db()
-    init_session()
+    init_auth()
+    init_runtime_state()
+    apply_theme_css()
+    apply_css()
 
     if not st.session_state.logged_in:
-        login_screen()
-        return
-
-    page = sidebar_navigation()
-    logout()
-
-    if page == "Dashboard":
-        dashboard_page()
-    elif page == "Invoice Processor":
-        processing_page()
-    elif page == "Export":
-        export_page()
-    elif page == "History":
-        show_history_page()
-    elif page == "Settings":
-        settings_page()
-    elif page == "Audit Logs":
-        show_audit_logs()
+        do_login()
+    else:
+        render_upload_module()
+        if st.sidebar.button("Terminate Secure Session"):
+            terminate_session()
 
 if __name__ == "__main__":
     main()
