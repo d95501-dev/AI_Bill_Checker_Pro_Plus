@@ -15,6 +15,7 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 
+# Fallback structures for external parsing libraries
 try:
     import fitz
 except Exception:
@@ -48,6 +49,7 @@ except Exception:
 import warnings
 warnings.filterwarnings("ignore")
 
+# Global System Constants
 APP_TITLE = "Deep CSC - AI Multi-Bill Processor Ultra"
 DB_PATH = "bills.db"
 OUTPUT_DIR = "output"
@@ -400,9 +402,6 @@ def heuristic_parse_from_text(text):
         }]
     }
 
-# ========================================================
-# UPDATED FUNCTION WITH THE REQUESTED REPLACEMENT LOGIC
-# ========================================================
 def try_gemini(model, image):
     try:
         img_payload = {
@@ -418,27 +417,18 @@ def try_gemini(model, image):
             },
         )
 
-        data = parse_json_from_response(
-            getattr(resp, "text", "")
-        )
-
+        data = parse_json_from_response(getattr(resp, "text", ""))
         st.session_state.gemini_available = True
 
-        if not isinstance(data, dict):
-            return {"bills": []}, None
-
+        if not isinstance(data, dict): return {"bills": []}, None
         bills = data.get("bills", [])
-
-        if not isinstance(bills, list):
-            bills = []
+        if not isinstance(bills, list): bills = []
 
         return {"bills": bills}, None
-
     except Exception as e:
         if is_gemini_quota_error(e):
             st.session_state.gemini_available = False
             st.session_state.last_gemini_error_time = datetime.now()
-
         return {"bills": []}, e
 
 def try_perplexity(client, image):
@@ -493,7 +483,6 @@ def analyze_with_auto_fallback(model_bundle, image, forced=None):
                 if res and "bills" in res: return res
         except Exception:
             continue
-
     return {"bills": []}
 
 def insert_bill(shop, date, gst, total, calc_total, status):
@@ -507,10 +496,10 @@ def insert_bill(shop, date, gst, total, calc_total, status):
         )
         conn.commit()
 
-def sanitize_sheet_name(name, fallback="Sheet"):
+def sanitize_sheet_name(name, index=1, fallback="Sheet"):
     name = re.sub(r"[\[\]\*\?\/\\:]", "_", str(name)).strip()
     name = re.sub(r"\s+", " ", name)
-    return (name[:25] or fallback)
+    return f"B{index}_{name[:20]}" if name else f"{fallback}_{index}"
 
 def build_excel_export(results):
     buffer = BytesIO()
@@ -564,7 +553,6 @@ def build_excel_export(results):
 
     det_idx = 2
     row_idx = 6
-
     rendered_fingerprints = set()
 
     for idx, item in enumerate(results):
@@ -587,8 +575,7 @@ def build_excel_export(results):
             orig_total = calc_total
 
         fingerprint = f"{shop}_{date_str}_{orig_total:.2f}"
-        if fingerprint in rendered_fingerprints:
-            continue
+        if fingerprint in rendered_fingerprints: continue
         rendered_fingerprints.add(fingerprint)
 
         for it in items:
@@ -628,7 +615,7 @@ def build_excel_export(results):
             cell.border = border_all
             if row_idx % 2 == 1: cell.fill = fill_zebra
 
-        clean_shop_title = sanitize_sheet_name(f"B{row_idx-5}_{shop}")
+        clean_shop_title = sanitize_sheet_name(shop, row_idx-5)
         ws_bill = wb.create_sheet(title=clean_shop_title)
         ws_bill.views.sheetView[0].showGridLines = True
         
@@ -663,7 +650,6 @@ def build_excel_export(results):
 
         for col_v in range(1, 5):
             ws_bill.column_dimensions[get_column_letter(col_v)].width = 22
-
         row_idx += 1
 
     if row_idx > 6:
@@ -680,7 +666,6 @@ def build_excel_export(results):
 
     for col in range(1, 8):
         ws1.column_dimensions[get_column_letter(col)].width = 20
-    for col in range(1, 8):
         ws2.column_dimensions[get_column_letter(col)].width = 20
 
     wb.save(buffer)
@@ -707,8 +692,7 @@ def build_batch_summary(results):
                 total = calc_total
 
             fingerprint = f"{shop}_{bill_date}_{total:.2f}"
-            if fingerprint in seen_fingerprints:
-                continue
+            if fingerprint in seen_fingerprints: continue
             seen_fingerprints.add(fingerprint)
             
             status = "Needs Review" if total <= 0 else ("Matched" if abs(calc_total - total) < 1 else "Mismatch")
@@ -787,79 +771,96 @@ def render_upload_module():
             "openai": setup_openai(),
         }
 
-        if uploaded_files and process_now:
-            all_results = []
-            for uploaded_file in uploaded_files:
-                file_key = f"{uploaded_file.name}_{uploaded_file.size}"
-                if file_key in st.session_state.processed_files:
-                    continue
+        if process_now and uploaded_files:
+            new_results = []
+            progress_bar = st.progress(0)
+            status_text = st.empty()
 
-                file_bytes = uploaded_file.getvalue()
-                name_lower = uploaded_file.name.lower()
-
-                if name_lower.endswith(".pdf"):
+            total_items = len(uploaded_files)
+            for idx, f in enumerate(uploaded_files):
+                status_text.markdown(f"**Processing File:** `{f.name}` ({idx+1}/{total_items})")
+                f_bytes = f.read()
+                
+                if f.name.lower().endswith(".pdf"):
                     try:
-                        pages = convert_pdf_to_images(file_bytes)
-                        for i, img in enumerate(pages):
-                            response_data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
-                            for structure in response_data.get("bills", []):
-                                all_results.append({"page": i + 1, "source": uploaded_file.name, "data": structure})
+                        images = convert_pdf_to_images(f_bytes)
+                        for p_idx, img in enumerate(images, 1):
+                            res = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
+                            for single_bill in res.get("bills", []):
+                                new_results.append({"source": f.name, "page": p_idx, "data": single_bill})
                     except Exception as e:
-                        st.error(f"Error parsing PDF frame structures: {e}")
+                        st.error(f"Failed to decode PDF `{f.name}`: {str(e)}")
                 else:
                     try:
-                        img = Image.open(BytesIO(file_bytes)).convert("RGB")
-                        response_data = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
-                        for structure in response_data.get("bills", []):
-                            all_results.append({"page": 1, "source": uploaded_file.name, "data": structure})
+                        img = Image.open(BytesIO(f_bytes)).convert("RGB")
+                        res = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
+                        for single_bill in res.get("bills", []):
+                            new_results.append({"source": f.name, "page": 1, "data": single_bill})
                     except Exception as e:
-                        st.error(f"Error compiling image frame matrix: {e}")
+                        st.error(f"Failed processing image `{f.name}`: {str(e)}")
 
-                st.session_state.processed_files.add(file_key)
-            
-            if all_results:
-                st.session_state.current_results.extend(all_results)
+                progress_bar.progress(int((idx + 1) / total_items * 100))
+
+            st.session_state.current_results = new_results
+            status_text.success("🟢 Complete batch sequence parsed successfully.")
 
         if st.session_state.current_results:
             df = build_batch_summary(st.session_state.current_results)
             render_metrics(df)
+
+            st.markdown("### 📊 Live Extracted Invoice Statement Summary")
             
-            st.markdown('<h4>Verified Batch Matrix Overview</h4>', unsafe_allow_html=True)
-            st.dataframe(df.drop(columns=["items_raw"], errors="ignore"), use_container_width=True)
+            def style_status(val):
+                if val == "Matched": return "background-color: #d1fae5; color: #065f46; font-weight: bold;"
+                if val == "Mismatch": return "background-color: #fee2e2; color: #991b1b; font-weight: bold;"
+                return "background-color: #fef3c7; color: #92400e;"
 
-            st.markdown('<h4>📦 Individual Sheet Ledger Breakdowns</h4>', unsafe_allow_html=True)
-            for _, row in df.iterrows():
-                st.markdown(f"**Establishment**: `{row['shop_name']}` | **Date**: `{row['bill_date']}` | **Source**: *{row['source']} (Page {row['page']})*")
-                st.dataframe(pd.DataFrame(row["items_raw"]), use_container_width=True)
+            if not df.empty:
+                display_df = df[["source", "page", "shop_name", "bill_date", "gst_number", "bill_total", "calculated_total", "status"]]
+                st.dataframe(display_df.style.applymap(style_status, subset=["status"]), use_container_width=True)
 
-            summary_text = make_share_text(df)
-            s1, s2, s3 = st.columns(3)
-            with s1: st.link_button("📱 WhatsApp Report", share_whatsapp(summary_text), use_container_width=True)
-            with s2: st.link_button("✈️ Telegram Despatch", share_telegram(summary_text), use_container_width=True)
-            with s3: st.link_button("📧 Email Dispatch", share_email(summary_text), use_container_width=True)
-
-            excel_data = build_excel_export(st.session_state.current_results)
-            st.download_button(
-                "📥 Download Compiled Excel Multi-Sheet Ledger",
-                data=excel_data,
-                file_name=f"AI_Split_Bill_Ledger_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-        else:
-            if not uploaded_files:
-                st.info("Awaiting batch dispatch context. Populate file uploader stream and run analytical pipeline.")
+                col_down1, col_down2 = st.columns(2)
+                with col_down1:
+                    excel_bytes = build_excel_export(st.session_state.current_results)
+                    st.download_button(
+                        label="📥 Download Formatted Excel Ledger (.xlsx)",
+                        data=excel_bytes,
+                        file_name=f"Deep_CSC_Batch_Ledger_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
+                    )
+                with col_down2:
+                    report_txt = make_share_text(df)
+                    st.markdown(f"""
+                        <div style="display:flex; gap:10px; margin-top:2px;">
+                            <a href="{share_whatsapp(report_txt)}" target="_blank" style="flex:1; text-align:center; background:#25D366; color:white; padding:10px; border-radius:12px; text-decoration:none; font-weight:bold;">WhatsApp Report</a>
+                            <a href="{share_telegram(report_txt)}" target="_blank" style="flex:1; text-align:center; background:#0088cc; color:white; padding:10px; border-radius:12px; text-decoration:none; font-weight:bold;">Telegram Report</a>
+                            <a href="{share_email(report_txt)}" target="_blank" style="flex:1; text-align:center; background:#ea4335; color:white; padding:10px; border-radius:12px; text-decoration:none; font-weight:bold;">Email Audit</a>
+                        </div>
+                    """, unsafe_allow_html=True)
+            else:
+                st.info("No explicit structured bills extracted from current data views.")
 
     with tabs[1]:
-        st.subheader("Historical Local Ledger Log Persistence")
+        st.markdown("### 🏢 Historical Synchronization Logs")
         with sqlite3.connect(DB_PATH) as conn:
-            history_df = pd.read_sql_query("SELECT * FROM bills ORDER BY timestamp DESC", conn)
-        st.dataframe(history_df, use_container_width=True)
+            hist_df = pd.read_sql_query("SELECT * FROM bills ORDER BY timestamp DESC LIMIT 200", conn)
+        if not hist_df.empty:
+            st.dataframe(hist_df, use_container_width=True)
+        else:
+            st.write("Database index logs are currently empty.")
 
     with tabs[2]:
-        st.markdown('<div class="section-card">', unsafe_allow_html=True)
-        render_theme_toggle("settings")
-        st.markdown('</div>', unsafe_allow_html=True)
+        st.markdown("### ⚙️ Master Environment Parameters")
+        render_theme_toggle("tab")
+
+def render_sidebar():
+    with st.sidebar:
+        st.markdown(f"### {APP_TITLE}")
+        st.markdown("---")
+        st.markdown(f"**Session Status:** `Authenticated`")
+        if st.button("Secure Logout"):
+            terminate_session()
 
 def main():
     setup_page()
@@ -867,14 +868,13 @@ def main():
     init_auth()
     init_runtime_state()
     apply_theme_css()
-    apply_css()
 
     if not st.session_state.logged_in:
         do_login()
     else:
+        apply_css()
+        render_sidebar()
         render_upload_module()
-        if st.sidebar.button("Terminate Secure Session"):
-            terminate_session()
 
 if __name__ == "__main__":
     main()
