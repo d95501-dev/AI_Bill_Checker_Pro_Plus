@@ -817,7 +817,7 @@ def render_upload_module():
 
             if not df.empty:
                 display_df = df[["source", "page", "shop_name", "bill_date", "gst_number", "bill_total", "calculated_total", "status"]]
-                st.dataframe(display_df.style.applymap(style_status, subset=["status"]), use_container_width=True)
+                st.dataframe(display_df.style.map(style_status, subset=["status"]), use_container_width=True)
 
                 col_down1, col_down2 = st.columns(2)
                 with col_down1:
