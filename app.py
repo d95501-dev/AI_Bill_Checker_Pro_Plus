@@ -817,8 +817,7 @@ def render_upload_module():
 
             if not df.empty:
                 display_df = df[["source", "page", "shop_name", "bill_date", "gst_number", "bill_total", "calculated_total", "status"]]
-               # Yeh line `.map()` use karegi agar naya pandas hai, nahi toh `.applymap()` par fallback karegi
-style_method = getattr(display_df.style, "map", getattr(display_df.style, "applymap", None))
+              style_method = getattr(display_df.style, "map", getattr(display_df.style, "applymap", None))
 if style_method:
     st.dataframe(style_method(style_status, subset=["status"]), use_container_width=True)
 else:
