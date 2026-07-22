@@ -3,6 +3,7 @@ import json
 import os
 import re
 import sqlite3
+import time
 import urllib.parse
 from datetime import datetime
 from io import BytesIO
@@ -788,6 +789,7 @@ def render_upload_module():
                             res = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
                             for single_bill in res.get("bills", []):
                                 new_results.append({"source": f.name, "page": p_idx, "data": single_bill})
+                            time.sleep(2)  # Delay added to respect API rate limits
                     except Exception as e:
                         st.error(f"Failed to decode PDF `{f.name}`: {str(e)}")
                 else:
@@ -796,6 +798,7 @@ def render_upload_module():
                         res = analyze_with_auto_fallback(model_bundle, img, forced=st.session_state.selected_provider)
                         for single_bill in res.get("bills", []):
                             new_results.append({"source": f.name, "page": 1, "data": single_bill})
+                        time.sleep(2)  # Delay added to respect API rate limits
                     except Exception as e:
                         st.error(f"Failed processing image `{f.name}`: {str(e)}")
 
